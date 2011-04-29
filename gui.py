@@ -156,6 +156,14 @@ class gui:
 			ret = gtk.Button ()
 			self.__add_event (ret, 'clicked', desc)
 			self.__build_add (desc, ret)
+		elif desc.tag == 'CheckButton':
+			assert len (desc.children) == 1
+			ret = gtk.CheckButton ()
+			def get (checkbutton, junk):
+				return checkbutton.get_active ()
+			self.__add_get (desc, 'value', get, ret)
+			self.__add_event (ret, 'toggled', desc)
+			self.__build_add (desc, ret)
 		elif desc.tag == 'Entry':
 			assert len (desc.children) == 0
 			ret = gtk.Entry ()
