@@ -1,5 +1,21 @@
 #!/usr/bin/env python
 
+# gui.py - use pygtk without making the code dependant on it
+# Copyright 2011 Bas Wijnen
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+# 
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 import sys
 import os
 import xml.etree.ElementTree as ET
@@ -175,6 +191,28 @@ class gui:
 			if x.get_data ('fill') == None:
 				x.set_data ('fill', True)
 			parent.pack_start (x, x.get_data ('expand'), x.get_data ('fill'))
+	def __build_noteadd (self, desc, parent):
+		def setpage (value, widget):
+			parent.set_data ('page', widget)
+			p = widget.get_parent ()
+			if p == None:
+				return
+			p.set_current_page (p.page_num (widget))
+		def setlabel (value, widget):
+			widget.set_data ('label', value)
+			parent = widget.get_parent ()
+			if parent == None:
+				return
+			parent.set_tab_label_text (widget, value)
+		for c in desc.children:
+			x = self.__build (c, {'setpage': setpage, 'set_label': setlabel})
+			parent.append_page (x)
+			label = x.get_data ('label')
+			if label != None:
+				parent.set_tab_label_text (x, label)
+		page = parent.get_data ('page')
+		if page != None:
+			parent.set_current_page (parent.page_num (page))
 	def __build_attach (self, desc, parent):
 		def parse (value):
 			w = value.split (',')
@@ -263,6 +301,12 @@ class gui:
 		elif desc.tag == 'HBox':
 			ret = gtk.HBox ()
 			self.__build_pack (desc, ret)
+		elif desc.tag == 'Notebook':
+			ret = gtk.Notebook ()
+			def show_tabs (value, notebook):
+				notebook.set_show_tabs (self.__as_bool (value))
+			self.__add_set (desc, 'show_tabs', show_tabs, ret)
+			self.__build_noteadd (desc, ret)
 		elif desc.tag == 'Label':
 			ret = gtk.Label ()
 			def set (value, label):
