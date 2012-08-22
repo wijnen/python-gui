@@ -20,6 +20,20 @@ import sys
 import os
 import xml.etree.ElementTree as ET
 import gtk
+import glib
+
+def find_path (name):
+	# Search name from environment, in current directory, and in user configuration.
+	d = os.getenv ('GUI_PATH')
+	if d is not None and os.path.exists (d):
+		return d
+	if os.path.exists (name):
+		return name
+	path = os.path.join (glib.get_user_config_dir (), name)
+	if os.path.exists (path):
+		return path
+	sys.stderr.write ('gui definition not found\n')
+	sys.exit (1)
 
 class gui:
 	class __element:
@@ -57,8 +71,10 @@ class gui:
 			name = os.path.basename (sys.argv[0])
 		self.__name = name
 		self.__external = external
-		# TODO: search for name.gui
-		tree = ET.parse (name + '.gui')
+		if name.endswith ('.py'):
+			name = name[:-3]
+		filename = find_path (name + os.extsep + 'gui')
+		tree = ET.parse (filename)
 		root = tree.getroot ()
 		assert not root.tail or not root.tail.strip ()
 		tree = self.__parse (root)
@@ -357,14 +373,6 @@ class gui:
 				cols = 1
 			ret = gtk.Table (1, cols)
 			self.__build_attach (desc, ret)
-		elif desc.tag == 'FileChooserButton':
-			ret = gtk.FileChooserButton ('')
-			def title (value, button):
-				button.set_title (value)
-			def get (button, junk):
-				return button.get_filename ()
-			self.__add_set (desc, 'title', title, ret)
-			self.__add_get (desc, 'value', get, ret)
 		elif desc.tag == 'SpinButton':
 			ret = gtk.SpinButton ()
 			def setrange (value, button):
@@ -421,6 +429,30 @@ class gui:
 				v = self.__add_custom_event (desc, 'activate')
 				if v != None:
 					ret.child.connect ('activate', self.__event_cb, v)
+		elif desc.tag == 'FileChooserButton':
+			assert len (desc.children) == 0
+			def title (value, button):
+				button.set_title (value)
+			def get (w, junk):
+				return w.get_filename ()
+			def set (value, w):
+				w.set_filename (value)
+			def action (value, w):
+				if value == 'open':
+					w.set_action (gtk.FILE_CHOOSER_ACTION_OPEN)
+				elif value == 'save':
+					w.set_action (gtk.FILE_CHOOSER_ACTION_SAVE)
+				elif value == 'select_folder':
+					w.set_action (gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER)
+				elif value == 'create_folder':
+					w.set_action (gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER)
+				else:
+					raise AssertionError ('invalid action type %s for FileChooserButton' % value)
+			ret = gtk.FileChooserButton ('')
+			self.__add_set (desc, 'title', title, ret)
+			self.__add_set (desc, 'action', action, ret)
+			self.__add_set (desc, 'set', set, ret)
+			self.__add_get (desc, 'value', get, ret)
 		elif desc.tag == 'HSeparator':
 			ret = gtk.HSeparator ()
 		elif desc.tag == 'External':
