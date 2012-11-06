@@ -114,7 +114,7 @@ def find_path (name): # {{{
 
 def iswindow (x): # {{{
 	'''Given a tag, return if it is a top level widget.'''
-	return x in ('Window', 'FileChooserDialog', 'AboutDialog')
+	return x in ('Window', 'Dialog', 'FileChooserDialog', 'AboutDialog')
 # }}}
 
 class Gui: # {{{
@@ -165,6 +165,7 @@ class Gui: # {{{
 		self.__event = {}
 		self.__get = {}
 		self.__set = {}
+		self.__loop_return = None
 		if not name:
 			name = os.path.basename (sys.argv[0])
 		self.__name = name
@@ -226,8 +227,7 @@ class Gui: # {{{
 		'''Internal function to register a non-gtk event.'''
 		if name not in desc.attributes:
 			return None
-		value = desc.attributes[name]
-		del desc.attributes[name]
+		value = desc.attributes.pop (name)
 		if nice_assert (value not in self.__get and value not in self.__set, 'gui custom event name is already registered as get or set property'):
 			if value not in self.__event:
 				self.__event[value] = [None, None]
@@ -556,6 +556,35 @@ class Gui: # {{{
 					ret.set_translator_credits (info['translator_credits'])
 			# }}}
 			self.__add_getset (desc, 'setup', None, setup)
+		elif desc.tag == 'Dialog':
+			ret = gtk.Dialog ()
+			ret.set_modal (True)
+			if 'buttons' in desc.attributes:
+				buttons = int (desc.attributes['buttons'])
+				del desc.attributes['buttons']
+			else:
+				buttons = 1
+			if not nice_assert (len (desc.children) >= buttons, 'not enough buttons defined'):
+				return None
+			cbs = [None] * buttons
+			for i in range (buttons):
+				b = desc.children[i]
+				if b.tag != 'Button':
+					desc.children[i] = self.__element ('Button', {}, [b])
+				b = desc.children[i]
+				cbs[i] = self.__add_custom_event (b, 'response')
+				widget = self.__build (b)
+				ret.add_action_widget (widget, i)
+			desc.children = desc.children[buttons:]
+			def response (widget, choice):
+				widget.hide ()
+				if cbs[choice] is None:
+					return
+				self.__event_cb (ret, cbs[choice])
+			self.__add_getset (desc, 'run', None, lambda x: ret.run ())
+			self.__add_getset (desc, 'title', ret.get_title, ret.set_title)
+			ret.connect ('response', response)
+			self.__build_pack (desc, ret.vbox)
 		elif desc.tag == 'VBox':
 			ret = gtk.VBox ()
 			self.__build_pack (desc, ret)
