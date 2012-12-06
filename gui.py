@@ -98,16 +98,22 @@ def nice_assert (assertion, message, exit = False): # {{{
 	return False
 # }}}
 
-def find_path (name): # {{{
+def find_path (name, packagename): # {{{
 	'''Search name from environment, in current directory, and in user configuration.'''
-	d = os.getenv ('GUI_PATH')
-	if d is not None and os.path.exists (d):
+	d = os.getenv ('GUI_PATH_' + packagename.upper ())
+	if d is not None and os.path.exists (os.path.join (d, name)):
 		return d
-	if os.path.exists (name):
-		return name
-	path = os.path.join (glib.get_user_config_dir (), name)
+	d = os.getenv ('GUI_PATH')
+	if d is not None and os.path.exists (os.path.join (d, name)):
+		return d
+	path = os.path.join (glib.get_user_config_dir (), packagename, name)
 	if os.path.exists (path):
 		return path
+	path = os.path.join (os.path.dirname (sys.argv[0]), name)
+	if os.path.exists (path):
+		return path
+	if os.path.exists (name):
+		return name
 	sys.stderr.write ('gui definition not found\n')
 	sys.exit (1)
 # }}}
@@ -155,7 +161,7 @@ class Gui: # {{{
 				ret.children += (self.__element ('Label', {'value': ':' + c.tail.strip ()}, []),)
 		return ret
 	# }}}
-	def __init__ (self, name = None, gtk = {}): # {{{
+	def __init__ (self, packagename = None, execname = None, gtk = {}): # {{{
 		'''Initialize the gui object.
 		name is the program name, which defaults to basename (sys.argv[0])
 		gtk is a list of gtk-specific objects which cannot be defined otherwise.
@@ -166,14 +172,18 @@ class Gui: # {{{
 		self.__get = {}
 		self.__set = {}
 		self.__loop_return = None
-		if not name:
-			name = os.path.basename (sys.argv[0])
-		self.__name = name
+		if not execname:
+			execname = os.path.basename (sys.argv[0])
+			e = os.extsep + 'py'
+			if execname.endswith (e):
+				execname = execname[:-len (e)]
+		if not packagename:
+			packagename = execname
+		self.__packagename = packagename
+		self.__execname = execname
 		self.__gtk = gtk
 		self.__building = True
-		if name.endswith ('.py'):
-			name = name[:-3]
-		filename = find_path (name + os.extsep + 'gui')
+		filename = find_path (execname + os.extsep + 'gui', packagename)
 		tree = ET.parse (filename)
 		root = tree.getroot ()
 		nice_assert (not root.tail or not root.tail.strip (), 'unexpected data at end of gui description')
@@ -515,11 +525,11 @@ class Gui: # {{{
 		elif desc.tag == 'Window':
 			ret = gtk.Window ()
 			ret.set_data ('show', True)
-			self.__add_getset (desc, 'title', ret.get_title, ret.set_title, default = self.__name)
+			self.__add_getset (desc, 'title', ret.get_title, ret.set_title, default = self.__packagename)
 			self.__build_add (desc, ret)
 		elif desc.tag == 'AboutDialog':
 			ret = gtk.AboutDialog ()
-			ret.set_program_name (self.__name)
+			ret.set_program_name (self.__execname)
 			ret.connect ('response', lambda w, v: ret.hide ())
 			def setup (info): # {{{
 				if isinstance (info, str):
