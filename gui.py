@@ -18,59 +18,6 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 # }}}
 
-# Documentation {{{
-'''This module provides a toolkit-independent way to create a gui in a program.
-The idea is that the gui definition should be toolkit-specific, but the rest of
-the program should not. A program using this module will not define the gui
-itself, and will not directly interact with it.
-
-The way it does interact is through an interface of several variable types:
-	get: a value which can be edited in the gui, and retreived by the
-		program on request.
-	set: a value which can be set to change the gui in some way.
-	event: an event which can happen in the gui, which should trigger a
-		callback.
-	data: shared memory which can be used by widgets and the application.
-		Built-in widgets never use this, but custom widgets can.
-
-For example, a text entry has a get and a set property, which can get and set
-the current value of the entry respectively. A button has an event property
-which fires when the button is clicked. A checkbutton has all three variable
-types.
-
-It is possible for a single widget to have zero or more variables of each type.
-For example, a spinbutton has a set variable for setting its value, and another
-to set its range.
-
-A gui can be defined as:
-<gtk>
-	<Window>
-		<VBox>Enter something<Entry changed='new_value'
-			value='myvalue:Initial value' />
-			<Button clicked='stop'>Quit!</Button>
-		</VBox>
-	</Window>
-</gtk>
-
-A program can use this gui as:
-
-import gui
-def the_value_changed ():
-	print ('New value: %s' % the_gui.get_value)
-	print ('+1 to that')
-	# This will cause recursion death, but you get the idea.
-	the_gui.myvalue += '1'
-g = gui.Gui (events = {'stop': (lambda x: g (False))})
-g.myvalue = "I'm setting a new value!"
-g ()
-
-As you can see, get and set variables can be used when they are wanted. Event
-variables must be registered. The last line runs the main loop. The same
-function with False as first argument stops the main loop. Nested loops are
-allowed, but only the innermost running loop may be stopped.
-'''
-# }}}
-
 # Imports. {{{
 import sys
 import os
@@ -118,7 +65,7 @@ def find_path (name, packagename): # {{{
 		return path
 	if os.path.exists (name):
 		return name
-	sys.stderr.write ('gui definition not found\n')
+	sys.stderr.write ('gui definition for %s not found\n' % name)
 	sys.exit (1)
 # }}}
 
@@ -156,8 +103,13 @@ class Wrapper: # {{{
 			target = self.widget
 		return start, end, target
 	# }}}
-	def assert_children (self, num): # {{{
-		nice_assert (len (self.desc.children) == num, '%s needs %d children, not %d' % (self.desc.tag, num, len (self.desc.children)))
+	def assert_children (self, min, max = None): # {{{
+		if max is None:
+			max = min
+		elif max < 0:
+			# Always acceptable.
+			max = len (self.desc.children)
+		return nice_assert (min <= len (self.desc.children) <= max, '%s needs %d-%d children, not %d' % (self.desc.tag, min, max, len (self.desc.children)))
 	# }}}
 	def register_attribute (self, name, getcb, setcb, arg = NO_ARG, default = NO_ARG): # {{{
 		def get_value (name, with_default): # {{{
@@ -367,7 +319,7 @@ class Wrapper: # {{{
 		# }}}
 		cols = target.get_property ('n-columns')
 		current = [0, 0]
-		for c in desc.children[start:end + 1]:
+		for c in self.desc.children[start:end + 1]:
 			x = self.gui.__build__ (c, {'x-options': (lambda x: x.get_data ('xopts'), xset), 'y-options': (lambda x: x.get_data ('yopts'), yset), 'left': (lambda x: x.get_data ('left'), lset), 'right': (lambda x: x.get_data ('right'), rset), 'top': (lambda x: x.get_data ('top'), tset), 'bottom': (lambda x: x.get_data ('bottom'), bset)})
 			if x is None:
 				continue
@@ -456,7 +408,7 @@ class Setting: # {{{
 				except:
 					error ('unable to parse setting %s as integer.' % value)
 			elif t == 'bool':
-				v = as_bool (v)
+				value = as_bool (value)
 			nice_assert ('name' not in gui.gui.__get__, 'Setting name %s is already used' % name)
 			gui.gui.__get__[name] = (None, value)
 		self.return_object = None
@@ -534,18 +486,16 @@ class Dialog (gtk.Dialog): # {{{
 	def __init__ (self, gui):
 		gtk.Dialog.__init__ (self)
 		self.set_modal (True)
-		buttons = int (self.get_attribute ('buttons', default = 1))
-		if not nice_assert (len (desc.children) >= buttons, 'not enough buttons defined'):
+		buttons = int (gui.get_attribute ('buttons', default = 1))
+		if not gui.assert_children (buttons, -1):
 			raise ValueError ('not enough buttons defined')
 		cbs = [None] * buttons
 		for i in range (buttons):
 			b = gui.desc.children[i]
 			if b.tag != 'Button':
 				gui.desc.children[i] = gui.gui.__element__ ('Button', {}, [b])
-				b = gui.desc.children[i]
 			cbs[i] = gui.register_event ('response')
-		gui.action_add (0, buttons)
-		gui.desc.children = gui.desc.children[buttons:]
+		gui.action_add (0, buttons - 1)
 		def response (widget, choice):
 			widget.hide ()
 			if cbs[choice] is None:
@@ -554,7 +504,7 @@ class Dialog (gtk.Dialog): # {{{
 		gui.register_attribute ('run', None, lambda x: self.run ())
 		gui.register_attribute ('title', self.get_title, self.set_title)
 		self.connect ('response', response)
-		gui.add_pack (target = self.vbox)
+		gui.pack_add (target = self.vbox, start = buttons)
 builtins['Dialog'] = Dialog
 # }}}
 class VBox (gtk.VBox): # {{{
@@ -622,7 +572,6 @@ builtins['Entry'] = Entry
 class Frame (gtk.Frame): # {{{
 	def __init__ (self, gui):
 		gtk.Frame.__init__ (self)
-		gui.register_attribute ('title', self.get_title, self.set_title, default = gui.gui.__packagename__)
 		gui.register_attribute ('label', self.get_label, lambda value: self.set_label (None if value == '' else value))
 		gui.add ()
 builtins['Frame'] = Frame
@@ -652,8 +601,6 @@ builtins['SpinButton'] = SpinButton
 #}}}
 class ComboBoxText (gtk.ComboBox): # {{{
 	def __init__ (self, gui):
-		gtk.ComboBox.__init__ (self, gtk.ListStore (str))
-		gui.assert_children (0)
 		def setcontent (value): # {{{
 			if isinstance (value, str):
 				l = value.split ('\n')
@@ -673,9 +620,14 @@ class ComboBoxText (gtk.ComboBox): # {{{
 			if value in d:
 				self.set_active (d.index (value))
 			else:
-				self.append ((value,))
+				self.get_model ().append ((value,))
 				self.set_active (len (d))
 		# }}}
+		gtk.ComboBox.__init__ (self, gtk.ListStore (str))
+		gui.assert_children (0, 1)
+		if len (gui.desc.children) > 0:
+			if nice_assert (gui.desc.children[0].tag == 'Label', 'ComboBoxText child must be a Label'):
+				setcontent (gui.desc.children[0].attributes['value'])
 		gui.register_attribute ('content', None, setcontent)
 		gui.register_attribute ('value', self.get_active, self.set_active)
 		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
@@ -684,8 +636,6 @@ builtins['ComboBoxText'] = ComboBoxText
 #}}}
 class ComboBoxEntryText (gtk.ComboBoxEntry): # {{{
 	def __init__ (self, gui):
-		gtk.ComboBoxEntry.__init__ (self, gtk.ListStore (str))
-		gui.assert_children (0)
 		def setcontent (value): # {{{
 			if isinstance (value, str):
 				l = value.split ('\n')
@@ -705,9 +655,14 @@ class ComboBoxEntryText (gtk.ComboBoxEntry): # {{{
 			if value in d:
 				self.set_active (d.index (value))
 			else:
-				self.append ((value,))
+				self.get_model ().append ((value,))
 				self.set_active (len (d))
 		# }}}
+		gtk.ComboBoxEntry.__init__ (self, gtk.ListStore (str))
+		gui.assert_children (0, 1)
+		if len (gui.desc.children) > 0:
+			if nice_assert (gui.desc.children[0].tag == 'Label', 'ComboBoxEntryText child must be a Label'):
+				setcontent (gui.desc.children[0].attributes['value'])
 		gui.register_attribute ('content', None, setcontent)
 		gui.register_attribute ('value', self.get_active, self.set_active)
 		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
@@ -716,7 +671,7 @@ class ComboBoxEntryText (gtk.ComboBoxEntry): # {{{
 builtins['ComboBoxEntryText'] = ComboBoxEntryText
 #}}}
 class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
-	def __init__ (self, gui):
+	def __init__ (self, gui, signal):
 		gui.assert_children (0)
 		def set_action (value): # {{{
 			if value == 'open':
@@ -748,22 +703,23 @@ class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
 		gui.register_bool_attribute ('overwrite_confirmation', self.get_do_overwrite_confirmation, self.set_do_overwrite_confirmation)
 		v = gui.register_event ('response')
 		if v is not None:
-			def response (r): # {{{
+			def response (widget, r, dummy = None): # {{{
 				widget.hide ()
 				v (self.get_filename () if r == gtk.RESPONSE_ACCEPT else None)
 			# }}}
-			self.connect ('response', response)
+			# A FileChooserDialog provides a response and fills the dummy argument; a FileChooserButton doesn't provide a response, puts ACCEPT there, and omits the dummy argument.
+			self.connect (signal, response, gtk.RESPONSE_ACCEPT)
 class FileChooserButton (FileChooser, gtk.FileChooserButton): # {{{
 	def __init__ (self, gui):
 		gtk.FileChooserButton.__init__ (self, '')
-		FileChooser.__init__ (self, gui)
+		FileChooser.__init__ (self, gui, 'file-set')
 builtins['FileChooserButton'] = FileChooserButton
 # }}}
 class FileChooserDialog (FileChooser, gtk.FileChooserDialog): # {{{
 	gtk_window = True
 	def __init__ (self, gui):
 		gtk.FileChooserDialog.__init__ (self, '', buttons = (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
-		FileChooser.__init__ (self, gui)
+		FileChooser.__init__ (self, gui, 'response')
 builtins['FileChooserDialog'] = FileChooserDialog
 # }}}
 # }}}
