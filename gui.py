@@ -2,7 +2,7 @@
 # vim: set foldmethod=marker :
 
 # gui.py - use pygtk without making the code dependant on it
-# Copyright 2011 Bas Wijnen
+# Copyright 2011 Bas Wijnen {{{
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU Affero General Public License as
@@ -16,6 +16,7 @@
 # 
 # You should have received a copy of the GNU Affero General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
+# }}}
 
 # Documentation {{{
 '''This module provides a toolkit-independent way to create a gui in a program.
@@ -29,6 +30,8 @@ The way it does interact is through an interface of several variable types:
 	set: a value which can be set to change the gui in some way.
 	event: an event which can happen in the gui, which should trigger a
 		callback.
+	data: shared memory which can be used by widgets and the application.
+		Built-in widgets never use this, but custom widgets can.
 
 For example, a text entry has a get and a set property, which can get and set
 the current value of the entry respectively. A button has an event property
@@ -43,7 +46,7 @@ A gui can be defined as:
 <gtk>
 	<Window>
 		<VBox>Enter something<Entry changed='new_value'
-			value='myvalue' />
+			value='myvalue:Initial value' />
 			<Button clicked='stop'>Quit!</Button>
 		</VBox>
 	</Window>
@@ -57,10 +60,9 @@ def the_value_changed ():
 	print ('+1 to that')
 	# This will cause recursion death, but you get the idea.
 	the_gui.myvalue += '1'
-the_gui = gui.Gui ()
-the_gui.new_value = the_value_changed
-the_gui.stop = lambda x: the_gui (False)
-the_gui ()
+g = gui.Gui (events = {'stop': (lambda x: g (False))})
+g.myvalue = "I'm setting a new value!"
+g ()
 
 As you can see, get and set variables can be used when they are wanted. Event
 variables must be registered. The last line runs the main loop. The same
@@ -75,8 +77,10 @@ import os
 import xml.etree.ElementTree as ET
 import gtk
 import glib
+import gobject
 # }}}
 
+# Global helper stuff {{{
 # Sentinel object for specifying "no argument". {{{
 class NoArgClass:
 	pass
@@ -118,14 +122,736 @@ def find_path (name, packagename): # {{{
 	sys.exit (1)
 # }}}
 
-def iswindow (x): # {{{
-	'''Given a tag, return if it is a top level widget.'''
-	return x in ('Window', 'Dialog', 'FileChooserDialog', 'AboutDialog')
+def as_bool (value): # {{{
+	'''Internal function to create a bool from a str. Str must be 'True' or 'False'.'''
+	if isinstance (value, str):
+		nice_assert (value == 'True' or value == 'False', 'string to be interpreted as bool is not "True" or "False": %s' % value)
+		return value == 'True'
+	return bool (value)
 # }}}
+# }}}
+
+class Wrapper: # {{{
+	def __init__ (self, gui, desc, widget, data): # {{{
+		self.gui = gui
+		self.desc = desc
+		self.data = data
+		class wrapper (widget):
+			def __init__ (self, parent):
+				parent.widget = self
+				widget.__init__ (self, parent)
+		wrapper (self)
+	# }}}
+	@classmethod	# create {{{
+	def create (cls, gui, desc, widget, data):
+		return cls (gui, desc, widget, data)
+	# }}}
+	def normalize_indices (self, start, end, target): # {{{
+		if start < 0:
+			start += len (self.desc.children)
+		if end < 0:
+			end += len (self.desc.children)
+		nice_assert (0 <= start < len (self.desc.children) and 0 <= end < len (self.desc.children) and start <= end, 'invalid target range for child widgets: %d, %d' % (start, end))
+		if target is None:
+			target = self.widget
+		return start, end, target
+	# }}}
+	def assert_children (self, num): # {{{
+		nice_assert (len (self.desc.children) == num, '%s needs %d children, not %d' % (self.desc.tag, num, len (self.desc.children)))
+	# }}}
+	def register_attribute (self, name, getcb, setcb, arg = NO_ARG, default = NO_ARG): # {{{
+		def get_value (name, with_default): # {{{
+			if name not in self.desc.attributes:
+				return None
+			value = self.desc.attributes.pop (name)
+			pos = value.find (':')
+			nice_assert (with_default or not pos >= 0, 'value %s for %s should not have a default value' % (value, name))
+			if pos >= 0:
+				return value[:pos], value[pos + 1:]
+			else:
+				return value, NO_ARG
+		# }}}
+		gval = get_value ('get_' + name, False)
+		sval = get_value ('set_' + name, True)
+		val = get_value (name, True)
+		if not nice_assert (val is None or (gval, sval) == (None, None), 'cannot use both get_ or set_ and non-prefixed value for %s' % name):
+			return
+		if val is not None:
+			gval = val
+			sval = val
+		if not nice_assert (gval is None or (gval[0] not in self.gui.__get__ and gval[0] not in self.gui.__set__ and gval[0] not in self.gui.__event__), 'gui name %s is already registered as get, set or event' % (gval[0] if gval is not None else '')):
+			return
+		if not nice_assert (sval is None or (sval[0] not in self.gui.__get__ and sval[0] not in self.gui.__set__ and sval[0] not in self.gui.__event__), 'gui name %s is already registered as get, set or event' % (sval[0] if sval is not None else '')):
+			return
+		if not nice_assert (not name.startswith ('get_') and not name.startswith ('set_'), 'name %s must not start with get_ or set_' % name):
+			return
+		if sval is not None:
+			if sval[1] is not NO_ARG:
+				# A set callback is set, and an initial argument is provided.
+				if arg is NO_ARG:
+					setcb (sval[1])
+				else:
+					setcb (arg, sval[1])
+			elif default is not NO_ARG:
+				# A set callback is set, and a default argument is provided.
+				if arg is NO_ARG:
+					setcb (default)
+				else:
+					setcb (arg, default)
+			if sval[0] != '':
+				# A set callback is set.
+				self.gui.__set__[sval[0]] = (setcb, arg)
+		if gval is not None and gval[0] != '':
+			# A get callback is set.
+			self.gui.__get__[gval[0]] = (getcb, arg)
+	# }}}
+	def register_bool_attribute (self, name, getcb, setcb): # {{{
+		self.register_attribute (name, lambda: as_bool (getcb ()), lambda x: setcb (as_bool (x)))
+	# }}}
+	def register_gtk_event (self, name, gtk_widget = None): # {{{
+		'''Internal function to register a gtk event.'''
+		value = self.get_attribute (name)
+		if value is None:
+			return
+		if nice_assert (value not in self.gui.__get__ and value not in self.gui.__set__, 'gui event name is already registered as get or set property'):
+			if value not in self.gui.__event__:
+				self.gui.__event__[value] = [None, None]
+			if gtk_widget is None:
+				gtk_widget = self.widget
+			gtk_widget.connect (name, self.gui.__event_cb__, value)
+	# }}}
+	def register_event (self, name): # {{{
+		'''Internal function to register a non-gtk event.'''
+		value = self.get_attribute (name)
+		if value is None:
+			return lambda *args, **kwargs: None
+		if nice_assert (value not in self.gui.__get__ and value not in self.gui.__set__, 'gui custom event name is already registered as get or set property'):
+			if value not in self.gui.__event__:
+				self.gui.__event__[value] = [None, None]
+		return lambda *args, **kwargs: self.gui.__event_cb__ (self.widget, *(args + (value,)), **kwargs)
+	# }}}
+	def add (self, start = 0, end = -1, target = None): # {{{
+		'''Internal function to create contents of a widget which should use add.'''
+		start, end, target = self.normalize_indices (start, end, target)
+		nice_assert (end == start, 'Container must have exactly one child: %s' % str (self.desc))
+		child = self.gui.__build__ (self.desc.children[start])
+		if child is not None:
+			target.add (child)
+	# }}}
+	def pack_add (self, start = 0, end = -1, target = None): # {{{
+		'''Internal function to create contents of a widget which should use pack.'''
+		start, end, target = self.normalize_indices (start, end, target)
+		def expand (widget, value): # {{{
+			widget.set_data ('expand', as_bool (value))
+			parent = widget.get_parent ()
+			if parent == None:
+				return
+			widget.set_child_packing (parent, widget.get_data ('expand'), widget.get_data ('fill'), 0, gtk.PACK_START)
+		# }}}
+		def fill (widget, value): # {{{
+			widget.set_data ('fill', as_bool (value))
+			parent = widget.get_parent ()
+			if parent == None:
+				return
+			widget.set_child_packing (parent, widget.get_data ('expand'), widget.get_data ('fill'), 0, gtk.PACK_START)
+		# }}}
+		for c in self.desc.children[start:end + 1]:
+			x = self.gui.__build__ (c, {'expand': (lambda x: x.get_data ('expand'), expand), 'fill': (lambda x: x.get_data ('fill'), fill)})
+			if x is None:
+				continue
+			if x.get_data ('expand') == None:
+				x.set_data ('expand', True)
+			if x.get_data ('fill') == None:
+				x.set_data ('fill', True)
+			target.pack_start (x, x.get_data ('expand'), x.get_data ('fill'))
+	# }}}
+	def notebook_add (self, start = 0, end = -1, target = None): # {{{
+		'''Internal function to create contents of a notebook.'''
+		start, end, target = self.normalize_indices (start, end, target)
+		def set_page (widget, value): # {{{
+			'''View this child in the Notebook.
+			If the page isn't attached yet, record that it should be shown when it is.'''
+			target.set_data ('page', widget)
+			p = widget.get_parent ()
+			if p is not None:
+				p.set_current_page (p.page_num (widget))
+		# }}}
+		def set_label (widget, value): # {{{
+			widget.set_data ('label', value)
+			p = widget.get_parent ()
+			if p is not None:
+				p.set_tab_label_text (widget, value)
+		# }}}
+		for c in self.desc.children[start:end + 1]:
+			if 'name' in c.attributes and c.tag != 'Setting':
+				name = c.attributes.pop ('name')
+				nice_assert (name not in self.gui.__get__, 'tab name %s is already defined as a getter' % name)
+				self.gui.__get__[name] = (None, self.widget.get_n_pages ())
+			x = self.gui.__build__ (c, {'page': (None, set_page), 'label': (lambda x: x.get_data ('label'), set_label)})
+			if x is None:
+				continue
+			target.append_page (x)
+			label = x.get_data ('label')
+			if label != None:
+				target.set_tab_label_text (x, label)
+		page = target.get_data ('page')
+		if page is not None:
+			target.set_current_page (self.widget.page_num (page))
+	# }}}
+	def paned_add (self, start = 0, end = -1, target = None): # {{{
+		'''Internal function to create contents of a paned widget.'''
+		start, end, target = self.normalize_indices (start, end, target)
+		nice_assert (end == start + 1, 'Paned widgets must have exactly 2 children: %s' % str (self.desc))
+		child = self.gui.__build__ (self.desc.children[start])
+		if child is not None:
+			target.add1 (child)
+		child = self.gui.__build__ (self.desc.children[start + 1])
+		if child is not None:
+			target.add2 (child)
+	# }}}
+	def table_add (self, start = 0, end = -1, target = None): # {{{
+		'''Internal function to create contents of a table.'''
+		start, end, target = self.normalize_indices (start, end, target)
+		def parse (value): # {{{
+			w = value.split (',')
+			v = 0
+			if '' in w:
+				del w[w.index ('')]
+			if 'expand' in w:
+				v |= gtk.EXPAND
+				del w[w.index ('expand')]
+			if 'fill' in w:
+				v |= gtk.FILL
+				del w[w.index ('fill')]
+			if 'shrink' in w:
+				v |= gtk.SHRINK
+				del w[w.index ('shrink')]
+			nice_assert (w == [], 'invalid options for table: %s' % ', '.join (w))
+			return v
+		# }}}
+		def xset (widget, value): # {{{
+			widget.set_data ('xopts', parse (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'x-options', widget.get_data ('xopts'))
+		# }}}
+		def yset (widget, value): # {{{
+			widget.set_data ('yopts', parse (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'y-options', widget.get_data ('yopts'))
+		# }}}
+		def lset (widget, value): # {{{
+			widget.set_data ('left', int (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'left-attach', widget.get_data ('left'))
+		# }}}
+		def rset (widget, value): # {{{
+			widget.set_data ('right', int (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'right-attach', widget.get_data ('right'))
+		# }}}
+		def tset (widget, value): # {{{
+			widget.set_data ('top', int (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'top-attach', widget.get_data ('top'))
+		# }}}
+		def bset (widget, value): # {{{
+			widget.set_data ('bottom', int (value))
+			parent = widget.get_parent ()
+			if parent is not None:
+				parent.child_set_property (widget, 'bottom-attach', widget.get_data ('bottom'))
+		# }}}
+		cols = target.get_property ('n-columns')
+		current = [0, 0]
+		for c in desc.children[start:end + 1]:
+			x = self.gui.__build__ (c, {'x-options': (lambda x: x.get_data ('xopts'), xset), 'y-options': (lambda x: x.get_data ('yopts'), yset), 'left': (lambda x: x.get_data ('left'), lset), 'right': (lambda x: x.get_data ('right'), rset), 'top': (lambda x: x.get_data ('top'), tset), 'bottom': (lambda x: x.get_data ('bottom'), bset)})
+			if x is None:
+				continue
+			if x.get_data ('xopts') == None:
+				x.set_data ('xopts', gtk.EXPAND | gtk.FILL)
+			if x.get_data ('yopts') == None:
+				x.set_data ('yopts', gtk.EXPAND | gtk.FILL)
+			if x.get_data ('left') == None:
+				x.set_data ('left', current[0])
+			if x.get_data ('right') == None:
+				x.set_data ('right', x.get_data ('left') + 1)
+			if x.get_data ('top') == None:
+				x.set_data ('top', current[1])
+			if x.get_data ('bottom') == None:
+				x.set_data ('bottom', x.get_data ('top') + 1)
+			current[0] = x.get_data ('right')
+			current[1] = x.get_data ('top')
+			if current[0] >= cols:
+				current[0] = 0
+				current[1] += 1
+			target.attach (x, x.get_data ('left'), x.get_data ('right'), x.get_data ('top'), x.get_data ('bottom'), x.get_data ('xopts'), x.get_data ('yopts'))
+	# }}}
+	def action_add (self, start = 0, end = -1, target = None): # {{{
+		start, end, target = self.normalize_indices (start, end, target)
+		for i in range (start, end + 1):
+			widget = self.gui.__build__ (self.desc.children[i])
+			target.add_action_widget (widget, i - start)
+	# }}}
+	def parse_menubar (self, items = None, start = 0, end = -1, target = None): # {{{
+		'''Create a menubar from the children.'''
+		if items is None:
+			items = self.desc.children
+		target = self.normalize_indices (start, end, target)[2]
+		if start < 0:
+			start += len (items)
+		if end < 0:
+			end += len (items)
+		nice_assert (0 <= start < len (items) and 0 <= end < len (items) and start <= end, 'invalid target range for menubar items: %d, %d' % (start, end))
+		retdesc = ''
+		retactions = []
+		for c in items:
+			if not nice_assert ('title' in c.attributes, 'Menu item must have a title attribute'):
+				continue
+			name = c.attributes.pop ('title')
+			action = 'a%d' % self.gui.__menuaction__
+			self.gui.__menuaction__ += 1
+			if c.tag == 'Menu':
+				desc, actions = self.parse_menubar (c.children)
+				retdesc += '<menu name="' + action + '" action="' + action + '">' + desc + '</menu>'
+				retactions.append ((action, None, name))
+				retactions += actions
+			elif c.tag == 'MenuItem':
+				if not nice_assert ('action' in c.attributes, 'menu item %s has no action' % name):
+					continue
+				value = c.attributes.pop ('action')
+				if value not in self.gui.__event__:
+					self.gui.__event__[value] = [None, None]
+				v = lambda *args, **kwargs: self.gui.__event_cb__ (self.gui.widget, *(args + (value,)), **kwargs)
+				retdesc += '<menuitem name="' + name + '" action="' + action + '"/>'
+				# The outer lambda function is needed to get a per-call copy of v; otherwise all options in a menu get the same event.
+				retactions.append ((action, None, name, None, None, v))
+			else:
+				error ('invalid item in MenuBar')
+		return retdesc, retactions
+	# }}}
+	def get_attribute (self, name, default = None): # {{{
+		if name not in self.desc.attributes:
+			return default
+		return self.desc.attributes.pop (name)
+	# }}}
+# }}}
+
+# Built-in widget classes. {{{
+builtins = {}
+class Setting: # {{{
+	def __init__ (self, gui):
+		gui.assert_children (0)
+		t = gui.get_attribute ('type', default = 'str')
+		nice_assert (t in ('str', 'bool', 'int'), 'invalid type for Setting; must be str, int, or bool.')
+		name = gui.get_attribute ('name')
+		value = gui.get_attribute ('value')
+		if nice_assert (name is not None, 'a Setting without name is useless') and nice_assert ('value' is not None, 'a Setting must have a value'):
+			if t == 'int':
+				try:
+					value = int (value)
+				except:
+					error ('unable to parse setting %s as integer.' % value)
+			elif t == 'bool':
+				v = as_bool (v)
+			nice_assert ('name' not in gui.gui.__get__, 'Setting name %s is already used' % name)
+			gui.gui.__get__[name] = (None, value)
+		self.return_object = None
+builtins['Setting'] = Setting
+# }}}
+class Label (gtk.Label): # {{{
+	def __init__ (self, gui):
+		gtk.Label.__init__ (self)
+		gui.assert_children (0)
+		gui.register_attribute ('value', self.get_text, self.set_text)
+builtins['Label'] = Label
+#}}}
+class Window (gtk.Window): # {{{
+	gtk_window = True
+	def __init__ (self, gui):
+		gtk.Window.__init__ (self)
+		gui.assert_children (1)
+		self.set_data ('show', True)
+		gui.register_attribute ('title', self.get_title, self.set_title, default = gui.gui.__packagename__)
+		gui.add ()
+builtins['Window'] = Window
+# }}}
+class ScrolledWindow (gtk.ScrolledWindow): # {{{
+	def __init__ (self, gui):
+		gtk.ScrolledWindow.__init__ (self)
+		gui.assert_children (1)
+		gui.add ()
+builtins['ScrolledWindow'] = ScrolledWindow
+#}}}
+class AboutDialog (gtk.AboutDialog): # {{{
+	gtk_window = True
+	def __init__ (self, gui):
+		gtk.AboutDialog.__init__ (self)
+		self.set_program_name (gui.gui.__execname__)
+		self.connect ('response', lambda w, v: self.hide ())
+		def setup (info): # {{{
+			if isinstance (info, str):
+				i = {}
+				for l in info[1:].split (info[0]):
+					k, v = l.split (None, 1)
+					i[k] = v
+				info = i
+			if 'name' in info:
+				self.set_name (info['name'])
+			if 'program_name' in info:
+				self.set_program_name (info['program_name'])
+			if 'version' in info:
+				self.set_version (info['version'])
+			if 'copyright' in info:
+				self.set_copyright (info['copyright'])
+			if 'comments' in info:
+				self.set_comments (info['comments'])
+			if 'license' in info:
+				self.set_license (info['license'])
+			if 'wrap_license' in info:
+				self.set_wrap_license (as_bool (info['wrap_license']))
+			if 'website' in info:
+				self.set_website (info['website'])
+			if 'website_label' in info:
+				self.set_website_label (info['website_label'])
+			if 'authors' in info:
+				self.set_authors (info['authors'])
+			if 'documenters' in info:
+				self.set_documenters (info['documenters'])
+			if 'artists' in info:
+				self.set_artists (info['artists'])
+			if 'translator_credits' in info:
+				self.set_translator_credits (info['translator_credits'])
+		# }}}
+		gui.register_attribute ('setup', None, setup)
+builtins['AboutDialog'] = AboutDialog
+# }}}
+class Dialog (gtk.Dialog): # {{{
+	gtk_window = True
+	def __init__ (self, gui):
+		gtk.Dialog.__init__ (self)
+		self.set_modal (True)
+		buttons = int (self.get_attribute ('buttons', default = 1))
+		if not nice_assert (len (desc.children) >= buttons, 'not enough buttons defined'):
+			raise ValueError ('not enough buttons defined')
+		cbs = [None] * buttons
+		for i in range (buttons):
+			b = gui.desc.children[i]
+			if b.tag != 'Button':
+				gui.desc.children[i] = gui.gui.__element__ ('Button', {}, [b])
+				b = gui.desc.children[i]
+			cbs[i] = gui.register_event ('response')
+		gui.action_add (0, buttons)
+		gui.desc.children = gui.desc.children[buttons:]
+		def response (widget, choice):
+			widget.hide ()
+			if cbs[choice] is None:
+				return
+			cbs[choice] ()
+		gui.register_attribute ('run', None, lambda x: self.run ())
+		gui.register_attribute ('title', self.get_title, self.set_title)
+		self.connect ('response', response)
+		gui.add_pack (target = self.vbox)
+builtins['Dialog'] = Dialog
+# }}}
+class VBox (gtk.VBox): # {{{
+	def __init__ (self, gui):
+		gtk.VBox.__init__ (self)
+		gui.pack_add ()
+builtins['VBox'] = VBox
+#}}}
+class HBox (gtk.HBox): # {{{
+	def __init__ (self, gui):
+		gtk.HBox.__init__ (self)
+		gui.pack_add ()
+builtins['HBox'] = HBox
+#}}}
+class Notebook (gtk.Notebook): # {{{
+	def __init__ (self, gui):
+		gtk.Notebook.__init__ (self)
+		gui.register_bool_attribute ('show_tabs', self.get_show_tabs, self.set_show_tabs)
+		tab_pos = {gtk.POS_TOP: 'top', gtk.POS_BOTTOM: 'bottom', gtk.POS_LEFT: 'left', gtk.POS_RIGHT: 'right'}
+		gui.register_attribute ('tab_pos', lambda: tab_pos[self.get_tab_pos ()], lambda x: self.set_tab_pos ([t[0] for t in tab_pos.items () if t[1] == x][0]))
+		def save_page ():
+			p = self.get_current_page ()
+			return lambda: self.set_current_page (p)
+		gui.register_attribute ('save_page', lambda: save_page, None)
+		gui.register_gtk_event ('switch_page')
+		gui.notebook_add ()
+builtins['Notebook'] = Notebook
+#}}}
+class Button (gtk.Button): # {{{
+	def __init__ (self, gui):
+		gtk.Button.__init__ (self)
+		gui.register_gtk_event ('clicked')
+		gui.add ()
+builtins['Button'] = Button
+#}}}
+class CheckButton (gtk.CheckButton): # {{{
+	def __init__ (self, gui):
+		gtk.CheckButton.__init__ (self)
+		def get (): # {{{
+			if self.get_inconsistent ():
+				return None
+			return self.get_active ()
+		# }}}
+		def set (value): # {{{
+			if value is None:
+				self.set_inconsistent (True)
+			else:
+				self.set_inconsistent (False)
+				self.set_active (as_bool (value))
+		# }}}
+		gui.register_attribute ('value', get, set)
+		gui.register_gtk_event ('toggled')
+		gui.add ()
+builtins['CheckButton'] = CheckButton
+#}}}
+class Entry (gtk.Entry): # {{{
+	def __init__ (self, gui):
+		gtk.Entry.__init__ (self)
+		gui.assert_children (0)
+		gui.register_attribute ('value', self.get_text, self.set_text)
+		gui.register_gtk_event ('activate')
+		gui.register_gtk_event ('changed')
+builtins['Entry'] = Entry
+#}}}
+class Frame (gtk.Frame): # {{{
+	def __init__ (self, gui):
+		gtk.Frame.__init__ (self)
+		gui.register_attribute ('title', self.get_title, self.set_title, default = gui.gui.__packagename__)
+		gui.register_attribute ('label', self.get_label, lambda value: self.set_label (None if value == '' else value))
+		gui.add ()
+builtins['Frame'] = Frame
+# }}}
+class Table (gtk.Table): # {{{
+	def __init__ (self, gui):
+		cols = int (gui.get_attribute ('columns', default = 1))
+		gtk.Table.__init__ (self, 1, cols)
+		gui.table_add ()
+builtins['Table'] = Table
+#}}}
+class SpinButton (gtk.SpinButton): # {{{
+	def __init__ (self, gui):
+		gtk.SpinButton.__init__ (self)
+		gui.assert_children (0)
+		self.set_increments (1, 10)
+		def parse_nums (r):
+			if isinstance (r, str):
+				r = r.split (',')
+			r = [float (x) for x in r]
+			return r
+		gui.register_attribute ('range', self.get_range, lambda r: self.set_range (*parse_nums (r)))
+		gui.register_attribute ('value', self.get_value, lambda v: self.set_value (float (v)))
+		gui.register_attribute ('increment', self.get_increments, lambda r: self.set_increments (*parse_nums (r)))
+		gui.register_gtk_event ('value-changed')
+builtins['SpinButton'] = SpinButton
+#}}}
+class ComboBoxText (gtk.ComboBox): # {{{
+	def __init__ (self, gui):
+		gtk.ComboBox.__init__ (self, gtk.ListStore (str))
+		gui.assert_children (0)
+		def setcontent (value): # {{{
+			if isinstance (value, str):
+				l = value.split ('\n')
+			else:
+				l = value
+			self.get_model ().clear ()
+			for i in l:
+				self.get_model ().append ((i.strip (),))
+		# }}}
+		def set (value): # {{{
+			def fill (model, path, iter, d): # {{{
+				d += (model.get_value (iter, 0),)
+				return False
+			# }}}
+			d = []
+			self.get_model ().foreach (fill, d)
+			if value in d:
+				self.set_active (d.index (value))
+			else:
+				self.append ((value,))
+				self.set_active (len (d))
+		# }}}
+		gui.register_attribute ('content', None, setcontent)
+		gui.register_attribute ('value', self.get_active, self.set_active)
+		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
+		gui.register_gtk_event ('changed')
+builtins['ComboBoxText'] = ComboBoxText
+#}}}
+class ComboBoxEntryText (gtk.ComboBoxEntry): # {{{
+	def __init__ (self, gui):
+		gtk.ComboBoxEntry.__init__ (self, gtk.ListStore (str))
+		gui.assert_children (0)
+		def setcontent (value): # {{{
+			if isinstance (value, str):
+				l = value.split ('\n')
+			else:
+				l = value
+			self.get_model ().clear ()
+			for i in l:
+				self.get_model ().append ((i.strip (),))
+		# }}}
+		def set (value): # {{{
+			def fill (model, path, iter, d): # {{{
+				d += (model.get_value (iter, 0),)
+				return False
+			# }}}
+			d = []
+			self.get_model ().foreach (fill, d)
+			if value in d:
+				self.set_active (d.index (value))
+			else:
+				self.append ((value,))
+				self.set_active (len (d))
+		# }}}
+		gui.register_attribute ('content', None, setcontent)
+		gui.register_attribute ('value', self.get_active, self.set_active)
+		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
+		gui.register_gtk_event ('changed')
+		gui.register_gtk_event ('activate', gtk_widget = self.child)
+builtins['ComboBoxEntryText'] = ComboBoxEntryText
+#}}}
+class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
+	def __init__ (self, gui):
+		gui.assert_children (0)
+		def set_action (value): # {{{
+			if value == 'open':
+				self.set_action (gtk.FILE_CHOOSER_ACTION_OPEN)
+			elif value == 'save':
+				self.set_action (gtk.FILE_CHOOSER_ACTION_SAVE)
+			elif value == 'select_folder':
+				self.set_action (gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER)
+			elif value == 'create_folder':
+				self.set_action (gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER)
+			else:
+				error ('invalid action type %s for FileChooser' % value)
+		# }}}
+		def get_action (): # {{{
+			a = self.get_action ()
+			if a == gtk.FILE_CHOOSER_ACTION_OPEN:
+				return 'open'
+			if a == gtk.FILE_CHOOSER_ACTION_SAVE:
+				return 'save'
+			if a == gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER:
+				return 'select_folder'
+			if a == gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER:
+				return 'create_folder'
+			error ('invalid action type for FileChooser')
+		# }}}
+		gui.register_attribute ('title', self.get_title, self.set_title)
+		gui.register_attribute ('action', get_action, set_action)
+		gui.register_attribute ('filename', self.get_filename, self.set_filename)
+		gui.register_bool_attribute ('overwrite_confirmation', self.get_do_overwrite_confirmation, self.set_do_overwrite_confirmation)
+		v = gui.register_event ('response')
+		if v is not None:
+			def response (r): # {{{
+				widget.hide ()
+				v (self.get_filename () if r == gtk.RESPONSE_ACCEPT else None)
+			# }}}
+			self.connect ('response', response)
+class FileChooserButton (FileChooser, gtk.FileChooserButton): # {{{
+	def __init__ (self, gui):
+		gtk.FileChooserButton.__init__ (self, '')
+		FileChooser.__init__ (self, gui)
+builtins['FileChooserButton'] = FileChooserButton
+# }}}
+class FileChooserDialog (FileChooser, gtk.FileChooserDialog): # {{{
+	gtk_window = True
+	def __init__ (self, gui):
+		gtk.FileChooserDialog.__init__ (self, '', buttons = (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
+		FileChooser.__init__ (self, gui)
+builtins['FileChooserDialog'] = FileChooserDialog
+# }}}
+# }}}
+class HSeparator (gtk.HSeparator): # {{{
+	def __init__ (self, gui):
+		gtk.HSeparator.__init__ (self)
+		gui.assert_children (0)
+builtins['HSeparator'] = HSeparator
+#}}}
+class VSeparator (gtk.VSeparator): # {{{
+	def __init__ (self, gui):
+		gtk.VSeparator.__init__ (self)
+		gui.assert_children (0)
+builtins['VSeparator'] = VSeparator
+#}}}
+class MenuBar: # {{{
+	def __init__ (self, gui):
+		ui = gtk.UIManager ()
+		gui.gui.__accel_groups__.append (ui.get_accel_group ())
+		actiongroup = gtk.ActionGroup ('actiongroup')
+		childdesc, actions = gui.parse_menubar ()
+		actiongroup.add_actions (actions)
+		ui.add_ui_from_string ('<ui><menubar>' + childdesc + '</menubar></ui>')
+		ui.insert_action_group (actiongroup)
+		self.return_object = ui.get_widget ('/menubar')
+builtins['MenuBar'] = MenuBar
+#}}}
+class HPaned (gtk.HPaned): # {{{
+	def __init__ (self, gui):
+		gtk.HPaned.__init__ (self)
+		gui.assert_children (2)
+		gui.paned_add ()
+builtins['HPaned'] = HPaned
+#}}}
+class VPaned (gtk.VPaned): # {{{
+	def __init__ (self, gui):
+		gtk.VPaned.__init__ (self)
+		gui.assert_children (2)
+		gui.paned_add ()
+builtins['VPaned'] = VPaned
+#}}}
+class Statusbar (gtk.Statusbar): # {{{
+	def __init__ (self, gui):
+		gtk.Statusbar.__init__ (self)
+		gui.assert_children (0)
+		self.value = ''
+		self.push (0, self.value)
+		def set (v): # {{{
+			self.pop (0)
+			self.value = v
+			self.push (0, self.value)
+		# }}}
+		gui.register_attribute ('text', lambda: self.value, set)
+builtins['Statusbar'] = Statusbar
+#}}}
+class Image (gtk.Image): # {{{
+	def __init__ (self, gui):
+		gtk.Image.__init__ (self)
+		gui.assert_children (0)
+		gui.register_attribute ('pixbuf', self.get_pixbuf, self.set_from_pixbuf)
+builtins['Image'] = Image
+#}}}
+class TextView (gtk.TextView): # {{{
+	def __init__ (self, gui):
+		gtk.TextView.__init__ (self)
+		gui.assert_children (0)
+		gui.register_attribute ('text', lambda: self.get_text (self.get_buffer ().get_start_iter (), self.get_buffer ().get_end_iter ()), self.get_buffer ().set_text)
+		wrap_modes = {gtk.WRAP_NONE: 'none', gtk.WRAP_CHAR: 'char', gtk.WRAP_WORD: 'word', gtk.WRAP_WORD_CHAR: 'word_char'}
+		gui.register_attribute ('wrap_mode', lambda: wrap_modes[self.get_wrap_mode ()], lambda x: self.set_wrap_mode ([t[0] for t in wrap_modes.items () if t[1] == x][0]))
+		register_bool_attribute ('editable', self.get_editable, self.set_editable)
+builtins['TextView'] = TextView
+#}}}
+class External: # {{{
+	def __init__ (self, gui):
+		gui.assert_children (0)
+		id = gui.get_attribute ('id')
+		if not nice_assert (id is not None, 'id of External must be defined') or not nice_assert (id in gui.gui.__gtk__, 'Unknown external object %s defined' % id):
+			self.return_object = None
+			return
+		self.return_object = gui.gui.__gtk__.pop (id)
+builtins['External'] = External
+#}}}
+#}}}
 
 class Gui: # {{{
 	'''Main class for toolkit-independent gui module.'''
-	class __element: # {{{
+	__widgets__ = {}
+	class __element__: # {{{
 		'''Internal class for holding gui elements.'''
 		def __init__ (self, tag, attributes, children): # {{{
 			'''Initialize an element.'''
@@ -150,28 +876,33 @@ class Gui: # {{{
 			return self.dump ('')
 		# }}}
 	# }}}
-	def __parse (self, element): # {{{
+	def __parse__ (self, element): # {{{
 		'''Internal function for parsing the contents of an element.'''
-		ret = self.__element (element.tag, element.attrib, [])
+		ret = self.__element__ (element.tag, element.attrib, [])
 		if element.text and element.text.strip ():
-			ret.children += (self.__element ('Label', {'value': ':' + element.text.strip ()}, []),)
+			ret.children += (self.__element__ ('Label', {'value': ':' + element.text.strip ()}, []),)
 		for c in element.getchildren ():
-			ret.children += (self.__parse (c),)
+			ret.children += (self.__parse__ (c),)
 			if c.tail and c.tail.strip ():
-				ret.children += (self.__element ('Label', {'value': ':' + c.tail.strip ()}, []),)
+				ret.children += (self.__element__ ('Label', {'value': ':' + c.tail.strip ()}, []),)
 		return ret
 	# }}}
-	def __init__ (self, packagename = None, execname = None, gtk = {}): # {{{
+	def __init__ (self, packagename = None, execname = None, gtk = {}, widgets = (), events = {}, data = None): # {{{
 		'''Initialize the gui object.
 		name is the program name, which defaults to basename (sys.argv[0])
 		gtk is a list of gtk-specific objects which cannot be defined otherwise.
 		Note that using gtk objects binds the application to the gtk toolkit.'''
-		self.__menuaction = 0
-		self.__uis = []
-		self.__event = {}
-		self.__get = {}
-		self.__set = {}
-		self.__loop_return = None
+		self.__data__ = data
+		if isinstance (widgets, dict):
+			self.__widgets__ = [widgets, builtins]
+		else:
+			self.__widgets__ = list (widgets) + [builtins]
+		self.__menuaction__ = 0
+		self.__event__ = {}
+		self.__get__ = {}
+		self.__set__ = {}
+		self.__defs__ = {}
+		self.__loop_return__ = None
 		if not execname:
 			execname = os.path.basename (sys.argv[0])
 			e = os.extsep + 'py'
@@ -179,643 +910,176 @@ class Gui: # {{{
 				execname = execname[:-len (e)]
 		if not packagename:
 			packagename = execname
-		self.__packagename = packagename
-		self.__execname = execname
-		self.__gtk = gtk
-		self.__building = True
+		self.__packagename__ = packagename
+		self.__execname__ = execname
+		self.__gtk__ = gtk
+		self.__building__ = True
 		filename = find_path (execname + os.extsep + 'gui', packagename)
 		tree = ET.parse (filename)
 		root = tree.getroot ()
 		nice_assert (not root.tail or not root.tail.strip (), 'unexpected data at end of gui description')
-		tree = self.__parse (root)
+		tree = self.__parse__ (root)
 
 		nice_assert (tree.tag == 'gtk', 'gui description top level element is not <gtk>')
-		self.__windows = []
-		nice_assert (tree.attributes == {}, 'no attributes are allowed on top level window tags')
-		for w in tree.children:
-			if w.tag == 'Setting':
-				self.__build (w)
+		self.__windows__ = []
+		nice_assert (tree.attributes == {}, 'no attributes are allowed on top level tag')
+		# Find all defs.
+		i = 0
+		while i < len (tree.children):
+			w = tree.children[i]
+			if w.tag != 'def':
+				# Apply defs.
+				i += self.__apply_defs__ (tree, i)
 				continue
-			if nice_assert (iswindow (w.tag), 'top level gui elements must be Windows (not %s)' % w.tag):
-				self.__accel_groups = []
-				self.__show_build = True
-				self.__windows += (self.__build (w),)
-				for ag in self.__accel_groups:
-					self.__windows[-1].add_accel_group (ag)
-				self.__accel_groups = None
-		nice_assert (len (self.__windows) > 0, 'there are no gui elements defined', exit = True)
-		for w in self.__windows:
+			if nice_assert ('name' in w.attributes, 'def requires a name attribute'):
+				self.__defs__[w.attributes['name']] = w.children
+			i += 1
+		# Build the interface.
+		self.__accel_groups__ = []
+		for w in tree.children:
+			if w.tag == 'def':
+				continue
+			win = self.__build__ (w)
+			if win is None:
+				continue
+			if not nice_assert (hasattr (win, 'gtk_window'), 'top-level elements must be windows'):
+				continue
+			for ag in self.__accel_groups__:
+				win.add_accel_group (ag)
+			self.__windows__.append (win)
+		nice_assert (len (self.__windows__) > 0, 'there are no gui elements defined', exit = True)
+		for w in self.__windows__:
 			w.connect ('destroy', lambda x: self (False, None))
 		# Reverse order, so first defined window is shown last, therefore (most likely) on top
-		self.__windows.reverse ()
-		nice_assert (self.__gtk == {}, 'Not all externally provided widgets were used: ' + str (self.__gtk))
-		del self.__gtk
-		self.__building = False
+		self.__windows__.reverse ()
+		nice_assert (self.__gtk__ == {}, 'Not all externally provided widgets were used: ' + str (self.__gtk__))
+		del self.__gtk__
+		# Register provided events.
+		for name in events:
+			if not nice_assert (name in self.__event__, 'event name %s is not in the gui' % name):
+				continue
+			value = events[name]
+			if isinstance (value, (tuple, list)):
+				if nice_assert (len (value) == 2, 'setting event to list or tuple, but length is not 2'):
+					self.__event__[name][0] = value[0]
+					self.__event__[name][1] = value[1]
+			else:
+				self.__event__[name][0] = value
+				self.__event__[name][1] = None
+		self.__building__ = False
 	# }}}
-	def __event_cb (self, object, *args): # {{{
+	def __copy_def__ (self, tags, attrs): # {{{
+		ret = []
+		for t in tags:
+			rattrs = {}
+			for a in t.attributes:
+				val = t.attributes[a]
+				if ':' in val:
+					n, d = val.split (':', 1)
+					if n in attrs:
+						if ':' in attrs[n]:
+							rattrs[a] = attrs[n]
+						else:
+							rattrs[a] = '%s:%s' % (attrs[n], d)
+					else:
+						rattrs[a] = val
+				elif val in attrs:
+					rattrs[a] = attrs[val]
+				else:
+					rattrs[a] = val
+			children = self.__copy_def__ (t.children, attrs)
+			ret.append (self.__element__ (t.tag, rattrs, children))
+		return ret
+	# }}}
+	def __apply_defs__ (self, parent, idx): # {{{
+		# Recursively replace parent.children[idx] with defined stuff, if any. Return new number of elements.
+		if parent.children[idx].tag in self.__defs__:
+			nice_assert (len (parent.children[idx].children) == 0, 'Macros must not have child elements')
+			subst = self.__copy_def__ (self.__defs__[parent.children[idx].tag], parent.children[idx].attributes)
+			parent.children[idx:idx + 1] = subst
+			return 0
+		i = 0
+		while i < len (parent.children[idx].children):
+			i += self.__apply_defs__ (parent.children[idx], i)
+		return 1
+	# }}}
+	def __event_cb__ (self, object, *args, **kwargs): # {{{
 		'''Internal callback for gui events.'''
-		if self.__event[args[-1]][0] is not None:
-			f = self.__event[args[-1]][0]
-			if self.__event[args[-1]][1] is not None:
-				args = list (args) + [self.__event[args[-1]][1]]
-			f (*args[:-1])
-	# }}}
-	def __add_event (self, desc, event, widget, name = None): # {{{
-		'''Internal function to register a gtk event.'''
-		if name == None:
-			name = event
-		if name not in desc.attributes:
-			return
-		value = desc.attributes[name]
-		del desc.attributes[name]
-		if nice_assert (value not in self.__get and value not in self.__set, 'gui event name is already registered as get or set property'):
-			if value not in self.__event:
-				self.__event[value] = [None, None]
-			widget.connect (event, self.__event_cb, value)
-	# }}}
-	def __add_custom_event (self, desc, name): # {{{
-		'''Internal function to register a non-gtk event.'''
-		if name not in desc.attributes:
-			return None
-		value = desc.attributes.pop (name)
-		if nice_assert (value not in self.__get and value not in self.__set, 'gui custom event name is already registered as get or set property'):
-			if value not in self.__event:
-				self.__event[value] = [None, None]
-		return value
-	# }}}
-	def __get_value (self, desc, name, with_default): # {{{
-		if name not in desc.attributes:
-			return None
-		value = desc.attributes[name]
-		del desc.attributes[name]
-		pos = value.find (':')
-		nice_assert (with_default or not pos >= 0, 'value %s for %s should not have a default value' % (value, name))
-		if pos >= 0:
-			return value[:pos], value[pos + 1:]
-		else:
-			return value, NO_ARG
-	# }}}
-	def __add_getset (self, desc, name, getcb, setcb, arg = NO_ARG, default = NO_ARG): # {{{
-		gval = self.__get_value (desc, 'get_' + name, False)
-		sval = self.__get_value (desc, 'set_' + name, True)
-		val = self.__get_value (desc, name, True)
-		nice_assert (val is None or (gval, sval) == (None, None), 'cannot use both get_ or set_ and non-prefixed value for %s' % name, exit = True)
-		if val is not None:
-			gval = val
-			sval = val
-		if not nice_assert (gval is None or (gval[0] not in self.__get and gval[0] not in self.__set and gval[0] not in self.__event), 'gui name %s is already registered as get, set or event' % name):
-			return
-		if not nice_assert (sval is None or (sval[0] not in self.__get and sval[0] not in self.__set and sval[0] not in self.__event), 'gui name %s is already registered as get, set or event' % name):
-			return
-		if not nice_assert (not name.startswith ('get_') and not name.startswith ('set_'), 'name %s must not start with get_ or set_' % name):
-			return
-		# Call default set
-		if sval is not None and sval[1] is not NO_ARG:
-			if arg is NO_ARG:
-				setcb (sval[1])
-			else:
-				setcb (arg, sval[1])
-		elif default is not NO_ARG:
-			if arg is NO_ARG:
-				setcb (default)
-			else:
-				setcb (arg, default)
-		if sval is not None and sval[0] != '':
-			self.__set[sval[0]] = (setcb, arg)
-		if gval is not None and gval[0] != '':
-			self.__get[gval[0]] = (getcb, arg)
+		if self.__event__[args[-1]][0] is not None:
+			f = self.__event__[args[-1]][0]
+			if self.__event__[args[-1]][1] is not None:
+				args = list (args) + [self.__event__[args[-1]][1]]
+			f (*args[:-1], **kwargs)
 	# }}}
 	def __getattr__ (self, name): # {{{
 		'''Get the value of a get variable.'''
-		if not nice_assert (name in self.__get, 'trying to get nonexistent property %s' % name):
-			return None
-		if self.__get[name][0] is not None:
-			if self.__get[name][1] is NO_ARG:
-				return self.__get[name][0] ()
-			else:
-				return self.__get[name][0] (self.__get[name][1])
+		if not name in self.__get__:
+			raise AttributeError
+		if self.__get__[name][0] is None:
+			return self.__get__[name][1]
+		if self.__get__[name][1] is NO_ARG:
+			return self.__get__[name][0] ()
 		else:
-			return self.__get[name][1]
+			return self.__get__[name][0] (self.__get__[name][1])
 	# }}}
 	def __setattr__ (self, name, value): # {{{
 		'''Set the value of a set variable.'''
 		if name.startswith ('_'):
 			self.__dict__[name] = value
-			return value
-		if name in self.__event:
-			if type (value) == tuple or type (value) == list:
-				if nice_assert (len (value) == 2, 'setting event to list or tuple, but length is not 2'):
-					self.__event[name][0] = value[0]
-					self.__event[name][1] = value[1]
+		elif name in self.__set__:
+			if self.__set__[name][1] is NO_ARG:
+				self.__set__[name][0] (value)
 			else:
-				self.__event[name][0] = value
-				self.__event[name][1] = None
-		elif name in self.__set:
-			if self.__set[name][1] is NO_ARG:
-				self.__set[name][0] (value)
-			else:
-				self.__set[name][0] (self.__set[name][1], value)
+				self.__set__[name][0] (self.__set__[name][1], value)
 		else:
 			error ('not setting ' + name + ", because it isn't defined in the gui")
 	# }}}
-	def __as_bool (self, value): # {{{
-		'''Internal function to create a bool from a str. Str must be 'True' or 'False'.'''
-		if type (value) == str:
-			nice_assert (value == 'True' or value == 'False', 'string to be interpreted as bool is not "True" or "False"')
-			return value == 'True'
-		return bool (value)
-	# }}}
-	def __build_add (self, desc, parent): # {{{
-		'''Internal function to create contents of a widget which should use add.'''
-		nice_assert (len (desc.children) == 1, 'trying to add more than one child to a container that cannot hold more: %s' % str (desc))
-		child = self.__build (desc.children[0])
-		if child is not None:
-			parent.add (child)
-	# }}}
-	def __build_pack (self, desc, parent): # {{{
-		'''Internal function to create contents of a widget which should use pack.'''
-		def expand (widget, value): # {{{
-			widget.set_data ('expand', self.__as_bool (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			widget.set_child_packing (parent, widget.get_data ('expand'), widget.get_data ('fill'), 0, gtk.PACK_START)
-		# }}}
-		def fill (widget, value): # {{{
-			widget.set_data ('fill', self.__as_bool (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			widget.set_child_packing (parent, widget.get_data ('expand'), widget.get_data ('fill'), 0, gtk.PACK_START)
-		# }}}
-		for c in desc.children:
-			x = self.__build (c, {'expand': (lambda x: x.get_data ('expand'), expand), 'fill': (lambda x: x.get_data ('fill'), fill)})
-			if x is None:
-				continue
-			if x.get_data ('expand') == None:
-				x.set_data ('expand', True)
-			if x.get_data ('fill') == None:
-				x.set_data ('fill', True)
-			parent.pack_start (x, x.get_data ('expand'), x.get_data ('fill'))
-	# }}}
-	def __build_noteadd (self, desc, parent): # {{{
-		'''Internal function to create contents of a notebook.'''
-		def set_page (widget, value): # {{{
-			parent.set_data ('page', widget)
-			p = widget.get_parent ()
-			if p == None:
-				return
-			p.set_current_page (p.page_num (widget))
-		# }}}
-		def set_label (widget, value): # {{{
-			widget.set_data ('label', value)
-			p = widget.get_parent ()
-			if p == None:
-				return
-			p.set_tab_label_text (widget, value)
-		# }}}
-		for c in desc.children:
-			if 'name' in c.attributes and c.tag != 'Setting':
-				name = c.attributes.pop ('name')
-				nice_assert (name not in self.__get, 'tab name %s is already defined as a getter' % name)
-				self.__get[name] = (None, parent.get_n_pages ())
-			x = self.__build (c, {'page': (None, set_page), 'label': (lambda x: x.get_data ('label'), set_label)})
-			if x is None:
-				continue
-			parent.append_page (x)
-			label = x.get_data ('label')
-			if label != None:
-				parent.set_tab_label_text (x, label)
-		page = parent.get_data ('page')
-		if page != None:
-			parent.set_current_page (parent.page_num (page))
-	# }}}
-	def __build_attach (self, desc, parent): # {{{
-		'''Internal function to create contents of a table.'''
-		def parse (value): # {{{
-			w = value.split (',')
-			v = 0
-			if '' in w:
-				del w[w.index ('')]
-			if 'expand' in w:
-				v |= gtk.EXPAND
-				del w[w.index ('expand')]
-			if 'fill' in w:
-				v |= gtk.FILL
-				del w[w.index ('fill')]
-			if 'shrink' in w:
-				v |= gtk.SHRINK
-				del w[w.index ('shrink')]
-			nice_assert (w == [], 'invalid options for table: %s' % ', '.join (w))
-			return v
-		# }}}
-		def xset (widget, value): # {{{
-			widget.set_data ('xopts', parse (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'x-options', widget.get_data ('xopts'))
-		# }}}
-		def yset (widget, value): # {{{
-			widget.set_data ('yopts', parse (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'y-options', widget.get_data ('yopts'))
-		# }}}
-		def lset (widget, value): # {{{
-			widget.set_data ('left', int (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'left-attach', widget.get_data ('left'))
-		# }}}
-		def rset (widget, value): # {{{
-			widget.set_data ('right', int (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'right-attach', widget.get_data ('right'))
-		# }}}
-		def tset (widget, value): # {{{
-			widget.set_data ('top', int (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'top-attach', widget.get_data ('top'))
-		# }}}
-		def bset (widget, value): # {{{
-			widget.set_data ('bottom', int (value))
-			parent = widget.get_parent ()
-			if parent == None:
-				return
-			parent.child_set_property (widget, 'bottom-attach', widget.get_data ('bottom'))
-		# }}}
-		cols = parent.get_property ('n-columns')
-		current = [0, 0]
-		for c in desc.children:
-			x = self.__build (c, {'x-options': (lambda x: x.get_data ('xopts'), xset), 'y-options': (lambda x: x.get_data ('yopts'), yset), 'left': (lambda x: x.get_data ('left'), lset), 'right': (lambda x: x.get_data ('right'), rset), 'top': (lambda x: x.get_data ('top'), tset), 'bottom': (lambda x: x.get_data ('bottom'), bset)})
-			if x is None:
-				continue
-			if x.get_data ('xopts') == None:
-				x.set_data ('xopts', gtk.EXPAND | gtk.FILL)
-			if x.get_data ('yopts') == None:
-				x.set_data ('yopts', gtk.EXPAND | gtk.FILL)
-			if x.get_data ('left') == None:
-				x.set_data ('left', current[0])
-			if x.get_data ('right') == None:
-				x.set_data ('right', x.get_data ('left') + 1)
-			if x.get_data ('top') == None:
-				x.set_data ('top', current[1])
-			if x.get_data ('bottom') == None:
-				x.set_data ('bottom', x.get_data ('top') + 1)
-			current[0] = x.get_data ('right')
-			current[1] = x.get_data ('top')
-			if current[0] >= cols:
-				current[0] = 0
-				current[1] += 1
-			parent.attach (x, x.get_data ('left'), x.get_data ('right'), x.get_data ('top'), x.get_data ('bottom'), x.get_data ('xopts'), x.get_data ('yopts'))
-	# }}}
-	def __parse_menubar (self, items): # {{{
-		'''Create a menubar from the children.'''
-		retdesc = ''
-		retactions = []
-		for c in items:
-			if not nice_assert ('title' in c.attributes, 'Menu item must have a title attribute'):
-				continue
-			name = c.attributes.pop ('title')
-			action = 'a%d' % self.__menuaction
-			self.__menuaction += 1
-			if c.tag == 'Menu':
-				desc, actions = self.__parse_menubar (c.children)
-				retdesc += '<menu name="' + action + '" action="' + action + '">' + desc + '</menu>'
-				retactions.append ((action, None, name))
-				retactions += actions
-			elif c.tag == 'MenuItem':
-				v = self.__add_custom_event (c, 'action')
-				if nice_assert (v != None, 'menu item %s has no action' % name):
-					retdesc += '<menuitem name="' + name + '" action="' + action + '"/>'
-					# The outer lambda function is needed to get a per-call copy of v; otherwise all options in a menu get the same event.
-					retactions.append ((action, None, name, None, None, (lambda x:(lambda widget: self.__event_cb (widget, x))) (v)))
-			else:
-				error ('invalid item in MenuBar')
-		return retdesc, retactions
-	# }}}
-	def __build (self, desc, fromparent = None): # {{{
+	def __build__ (self, desc, fromparent = None): # {{{
 		'''Internal function to create a widget, including contents.'''
-		if desc.tag == 'Setting':
-			nice_assert (len (desc.children) == 0, 'a Setting must not have children')
-			if 'type' in desc.attributes:
-				t = desc.attributes.pop ('type')
+		def show (w, value): # {{{
+			if as_bool (value):
+				w.show ()
 			else:
-				t = 'str'
-			nice_assert (t in ('str', 'bool', 'int'), 'invalid type for Setting; must be str, int, or bool.')
-			if nice_assert ('name' in desc.attributes, 'a Setting without name is useless') and nice_assert ('value' in desc.attributes, 'a Setting must have a value'):
-				v = desc.attributes.pop ('value')
-				if t == 'int':
-					try:
-						v = int (v)
-					except:
-						error ('unable to parse setting %s as integer.' % v)
-				elif t == 'bool':
-					v = self.__as_bool (v)
-				self.__get[desc.attributes.pop ('name')] = (None, v)
-			nice_assert (desc.attributes == {}, 'unused attributes on Setting')
+				w.hide ()
+		# }}}
+		def showwin (w, value): # {{{
+			w.set_data ('show', as_bool (value))
+			if not self.__building__:
+				show (w, value)
+		# }}}
+		for w in self.__widgets__:
+			if desc.tag in w:
+				widget = w[desc.tag]
+				break
+		else:
+			error ('no widget named %s defined' % desc.tag)
 			return None
-		elif desc.tag == 'Window':
-			ret = gtk.Window ()
-			ret.set_data ('show', True)
-			self.__add_getset (desc, 'title', ret.get_title, ret.set_title, default = self.__packagename)
-			self.__build_add (desc, ret)
-		elif desc.tag == 'AboutDialog':
-			ret = gtk.AboutDialog ()
-			ret.set_program_name (self.__execname)
-			ret.connect ('response', lambda w, v: ret.hide ())
-			def setup (info): # {{{
-				if isinstance (info, str):
-					i = {}
-					for l in info.split ('|'):
-						k, v = l.split (None, 1)
-						i[k] = v
-					info = i
-				if 'name' in info:
-					ret.set_name (info['name'])
-				if 'program_name' in info:
-					ret.set_program_name (info['program_name'])
-				if 'version' in info:
-					ret.set_version (info['version'])
-				if 'copyright' in info:
-					ret.set_copyright (info['copyright'])
-				if 'comments' in info:
-					ret.set_comments (info['comments'])
-				if 'license' in info:
-					ret.set_license (info['license'])
-				if 'wrap_license' in info:
-					ret.set_wrap_license (info['wrap_license'])
-				if 'website' in info:
-					ret.set_website (info['website'])
-				if 'website_label' in info:
-					ret.set_website_label (info['website_label'])
-				if 'authors' in info:
-					ret.set_authors (info['authors'])
-				if 'documenters' in info:
-					ret.set_documenters (info['documenters'])
-				if 'artists' in info:
-					ret.set_artists (info['artists'])
-				if 'translator_credits' in info:
-					ret.set_translator_credits (info['translator_credits'])
-			# }}}
-			self.__add_getset (desc, 'setup', None, setup)
-		elif desc.tag == 'Dialog':
-			ret = gtk.Dialog ()
-			ret.set_modal (True)
-			if 'buttons' in desc.attributes:
-				buttons = int (desc.attributes['buttons'])
-				del desc.attributes['buttons']
-			else:
-				buttons = 1
-			if not nice_assert (len (desc.children) >= buttons, 'not enough buttons defined'):
+		wrap = Wrapper.create (self, desc, widget, self.__data__)
+		ret = wrap.widget
+		if hasattr (ret, 'return_object'):
+			ret = ret.return_object
+			if ret is None:
+				if desc.attributes != {}:
+					error ('unused attributes for ' + desc.tag + ': ' + str (desc.attributes))
 				return None
-			cbs = [None] * buttons
-			for i in range (buttons):
-				b = desc.children[i]
-				if b.tag != 'Button':
-					desc.children[i] = self.__element ('Button', {}, [b])
-				b = desc.children[i]
-				cbs[i] = self.__add_custom_event (b, 'response')
-				widget = self.__build (b)
-				ret.add_action_widget (widget, i)
-			desc.children = desc.children[buttons:]
-			def response (widget, choice):
-				widget.hide ()
-				if cbs[choice] is None:
-					return
-				self.__event_cb (ret, cbs[choice])
-			self.__add_getset (desc, 'run', None, lambda x: ret.run ())
-			self.__add_getset (desc, 'title', ret.get_title, ret.set_title)
-			ret.connect ('response', response)
-			self.__build_pack (desc, ret.vbox)
-		elif desc.tag == 'VBox':
-			ret = gtk.VBox ()
-			self.__build_pack (desc, ret)
-		elif desc.tag == 'HBox':
-			ret = gtk.HBox ()
-			self.__build_pack (desc, ret)
-		elif desc.tag == 'Notebook':
-			ret = gtk.Notebook ()
-			self.__add_getset (desc, 'show_tabs', ret.get_show_tabs, lambda value: ret.set_show_tabs (self.__as_bool (value)))
-			self.__add_event (desc, 'switch_page', ret)
-			self.__build_noteadd (desc, ret)
-		elif desc.tag == 'Label':
-			nice_assert (len (desc.children) == 0, 'a Label must not have children')
-			ret = gtk.Label ()
-			self.__add_getset (desc, 'value', ret.get_text, ret.set_text)
-		elif desc.tag == 'Button':
-			nice_assert (len (desc.children) == 1, 'trying to add more or less than one child to a Button')
-			ret = gtk.Button ()
-			self.__add_event (desc, 'clicked', ret)
-			self.__build_add (desc, ret)
-		elif desc.tag == 'CheckButton':
-			nice_assert (len (desc.children) == 1, 'trying to add more or less than one child to a CheckButton')
-			ret = gtk.CheckButton ()
-			def get (): # {{{
-				if ret.get_inconsistent ():
-					return None
-				return ret.get_active ()
-			# }}}
-			def set (value): # {{{
-				if value is None:
-					ret.set_inconsistent (True)
-				else:
-					ret.set_inconsistent (False)
-					ret.set_active (self.__as_bool (value))
-			# }}}
-			self.__add_getset (desc, 'value', get, set)
-			self.__add_event (desc, 'toggled', ret)
-			self.__build_add (desc, ret)
-		elif desc.tag == 'Entry':
-			nice_assert (len (desc.children) == 0, 'trying to add a child to an Entry')
-			ret = gtk.Entry ()
-			self.__add_getset (desc, 'value', ret.get_text, ret.set_text)
-			self.__add_event (desc, 'activate', ret)
-			self.__add_event (desc, 'changed', ret)
-		elif desc.tag == 'Frame':
-			nice_assert (len (desc.children) == 1, 'trying to add more than one child to a Frame')
-			ret = gtk.Frame ()
-			def set (value, frame): # {{{
-				if value == '':
-					frame.set_label (None)
-				else:
-					frame.set_label (value)
-			# }}}
-			self.__add_getset (desc, 'label', ret.get_label, lambda value: ret.set_label (None if value == '' else value))
-			self.__build_add (desc, ret)
-		elif desc.tag == 'Table':
-			if 'columns' in desc.attributes:
-				cols = int (desc.attributes['columns'])
-				del desc.attributes['columns']
-			else:
-				cols = 1
-			ret = gtk.Table (1, cols)
-			self.__build_attach (desc, ret)
-		elif desc.tag == 'SpinButton':
-			ret = gtk.SpinButton ()
-			ret.set_increments (1, 10)
-			def set_range (r): # {{{
-				if isinstance (r, str):
-					r = r.split (',')
-				r = [float (x) for x in r]
-				ret.set_range (*r)
-			# }}}
-			def set_increments (r): # {{{
-				if isinstance (r, str):
-					r = r.split (',')
-				r = [float (x) for x in r]
-				ret.set_increments (*r)
-			# }}}
-			self.__add_getset (desc, 'range', ret.get_range, set_range)
-			self.__add_getset (desc, 'value', ret.get_value, lambda v: ret.set_value (float (v)))
-			self.__add_getset (desc, 'increment', ret.get_increments, set_increments)
-			self.__add_event (desc, 'value-changed', ret)
-		elif desc.tag == 'ComboBoxText' or desc.tag == 'ComboBoxEntryText':
-			if desc.tag == 'ComboBoxText':
-				ret = gtk.combo_box_new_text ()
-			else:
-				ret = gtk.combo_box_entry_new_text ()
-			def setcontent (value): # {{{
-				if type (value) == str:
-					l = value.split ('\n')
-				else:
-					l = value
-				ret.get_model ().clear ()
-				for i in l:
-					ret.append_text (i.strip ())
-			# }}}
-			def set (value): # {{{
-				def fill (model, path, iter, d): # {{{
-					d += (model.get_value (iter, 0),)
-					return False
-				# }}}
-				d = []
-				ret.get_model ().foreach (fill, d)
-				if value in d:
-					ret.set_active (d.index (value))
-				else:
-					ret.append_text (value)
-					ret.set_active (len (d))
-			# }}}
-			if len (desc.children) > 0:
-				if nice_assert (len (desc.children) == 1 and desc.children[0].tag == 'Label', 'trying to add something other than one Label to a ComboBoxText or ComboBoxEntryText'):
-					setcontent (desc.children[0].attributes['value'].split (':', 1)[1])
-					ret.set_active (0)
-			self.__add_getset (desc, 'content', None, setcontent)
-			self.__add_getset (desc, 'value', ret.get_active, ret.set_active)
-			self.__add_getset (desc, 'text', ret.get_active_text, set)
-			self.__add_event (desc, 'changed', ret)
-			if desc.tag == 'ComboBoxEntryText':
-				v = self.__add_custom_event (desc, 'activate')
-				if v is not None:
-					ret.child.connect ('activate', self.__event_cb, v)
-		elif desc.tag in ('FileChooserButton', 'FileChooserDialog'):
-			nice_assert (len (desc.children) == 0, 'trying to add a child to a FileChooserButton or FileChooserDialog')
-			if desc.tag == 'FileChooserButton':
-				ret = gtk.FileChooserButton ('')
-			else:
-				ret = gtk.FileChooserDialog ('', buttons = (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
-			def set_action (value): # {{{
-				if value == 'open':
-					ret.set_action (gtk.FILE_CHOOSER_ACTION_OPEN)
-				elif value == 'save':
-					ret.set_action (gtk.FILE_CHOOSER_ACTION_SAVE)
-				elif value == 'select_folder':
-					ret.set_action (gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER)
-				elif value == 'create_folder':
-					ret.set_action (gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER)
-				else:
-					error ('invalid action type %s for FileChooserButton' % value)
-			# }}}
-			def get_action (): # {{{
-				a = ret.get_action ()
-				if a == gtk.FILE_CHOOSER_ACTION_OPEN:
-					return 'open'
-				if a == gtk.FILE_CHOOSER_ACTION_SAVE:
-					return 'save'
-				if a == gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER:
-					return 'select_folder'
-				if a == gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER:
-					return 'create_folder'
-				error ('invalid action type for FileChooserButton or FileChooserDialog')
-			# }}}
-			self.__add_getset (desc, 'title', ret.get_title, ret.set_title)
-			self.__add_getset (desc, 'action', get_action, set_action)
-			self.__add_getset (desc, 'filename', ret.get_filename, ret.set_filename)
-			self.__add_getset (desc, 'overwrite_confirmation', ret.get_do_overwrite_confirmation, lambda x: ret.set_do_overwrite_confirmation (self.__as_bool (x)))
-			v = self.__add_custom_event (desc, 'response')
-			if v is not None:
-				def response (widget, r): # {{{
-					widget.hide ()
-					self.__event_cb (ret, ret.get_filename () if r == gtk.RESPONSE_ACCEPT else None, v)
-				# }}}
-				ret.connect ('response', response)
-		elif desc.tag == 'HSeparator':
-			ret = gtk.HSeparator ()
-		elif desc.tag == 'VSeparator':
-			ret = gtk.VSeparator ()
-		elif desc.tag == 'MenuBar':
-			ui = gtk.UIManager ()
-			self.__accel_groups.append (ui.get_accel_group ())
-			actiongroup = gtk.ActionGroup ('actiongroup')
-			childdesc, actions = self.__parse_menubar (desc.children)
-			actiongroup.add_actions (actions)
-			ui.add_ui_from_string ('<ui><menubar>' + childdesc + '</menubar></ui>')
-			ui.insert_action_group (actiongroup)
-			ret = ui.get_widget ('/menubar')
-			self.__uis.append (ui)
-		elif desc.tag == 'Statusbar':
-			ret = gtk.Statusbar ()
-			value = ['']
-			ret.push (0, value[0])
-			def set (v): # {{{
-				ret.pop (0)
-				value[0] = v
-				ret.push (0, value[0])
-			# }}}
-			self.__add_getset (desc, 'text', lambda: value[0], set)
-		elif desc.tag == 'External':
-			nice_assert (len (desc.children) == 0, 'trying to add a child to an External element')
-			ret = self.__gtk[desc.attributes['id']]
-			del self.__gtk[desc.attributes['id']]
-			del desc.attributes['id']
-		else:
-			error ('invalid tag ' + desc.tag)
-		if not iswindow (desc.tag):
+		if not hasattr (ret, 'gtk_window'):
 			ret.show ()
-			self.__add_getset (desc, 'show', ret.get_visible, lambda x: self.__show (ret, x))
+			wrap.register_attribute ('show', ret.get_visible, lambda x: show (ret, x))
 		else:
-			self.__add_getset (desc, 'show', lambda: ret.get_data ('show'), lambda x: self.__showwin (ret, x))
-		self.__add_getset (desc, 'sensitive', ret.get_sensitive, ret.set_sensitive)
+			wrap.register_attribute ('show', lambda: ret.get_data ('show'), lambda x: showwin (ret, x))
+		wrap.register_attribute ('sensitive', ret.get_sensitive, ret.set_sensitive)
+		wrap.register_attribute ('can_focus', lambda x: ret.get_can_focus (as_bool (x)), lambda x: ret.set_can_focus (as_bool (x)))
 		if fromparent != None:
 			for k in fromparent:
-				self.__add_getset (desc, k, fromparent[k][0], fromparent[k][1], ret)
+				wrap.register_attribute (k, fromparent[k][0], fromparent[k][1], ret)
 		if desc.attributes != {}:
 			error ('unused attributes for ' + desc.tag + ': ' + str (desc.attributes))
 		return ret
 	# }}}
-	def __showwin (self, w, value): # {{{
-		w.set_data ('show', self.__as_bool (value))
-		if not self.__building:
-			self.__show (w, value)
-	# }}}
-	def __show (self, w, value): # {{{
-		if self.__as_bool (value):
-			w.show ()
-		else:
-			w.hide ()
-	# }}}
 	def __call__ (self, run = True, ret = None): # {{{
 		'''Run the main loop.'''
 		if run:
-			for w in self.__windows:
+			for w in self.__windows__:
 				if w.get_data ('show') == True:	# True means show, None and False mean hide.
 					w.show ()
 			if run is True:
@@ -823,9 +1087,9 @@ class Gui: # {{{
 			else:
 				while gtk.events_pending ():
 					gtk.main_iteration (False)
-			return self.__loop_return
+			return self.__loop_return__
 		else:
-			self.__loop_return = ret
+			self.__loop_return__ = ret
 			gtk.main_quit ()
 	# }}}
 # }}}
