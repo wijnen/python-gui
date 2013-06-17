@@ -377,10 +377,9 @@ class Wrapper: # {{{
 				value = c.attributes.pop ('action')
 				if value not in self.gui.__event__:
 					self.gui.__event__[value] = [None, None]
-				v = lambda *args, **kwargs: self.gui.__event_cb__ (self.gui.widget, *(args + (value,)), **kwargs)
 				retdesc += '<menuitem name="' + name + '" action="' + action + '"/>'
 				# The outer lambda function is needed to get a per-call copy of v; otherwise all options in a menu get the same event.
-				retactions.append ((action, None, name, None, None, v))
+				retactions.append ((action, None, name, None, None, (lambda v = value: (lambda *args, **kwargs: self.gui.__event_cb__ (self.widget, *(args + (v,)), **kwargs))) ()))
 			else:
 				error ('invalid item in MenuBar')
 		return retdesc, retactions
@@ -624,13 +623,16 @@ class ComboBoxText (gtk.ComboBox): # {{{
 				self.set_active (len (d))
 		# }}}
 		gtk.ComboBox.__init__ (self, gtk.ListStore (str))
+		renderer = gtk.CellRendererText ()
+		self.pack_start (renderer)
+		self.add_attribute (renderer, 'text', 0)
 		gui.assert_children (0, 1)
 		if len (gui.desc.children) > 0:
-			if nice_assert (gui.desc.children[0].tag == 'Label', 'ComboBoxText child must be a Label'):
-				setcontent (gui.desc.children[0].attributes['value'])
+			if nice_assert (gui.desc.children[0].tag == 'Label' and gui.desc.children[0].attributes['value'].startswith (':'), 'ComboBoxText child must be a Label'):
+				setcontent (gui.desc.children[0].attributes['value'][1:])
 		gui.register_attribute ('content', None, setcontent)
 		gui.register_attribute ('value', self.get_active, self.set_active)
-		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
+		gui.register_attribute ('text', lambda: (self.get_model ().get_value (self.get_active_iter (), 0) if self.get_active_iter () is not None else ''), set)
 		gui.register_gtk_event ('changed')
 builtins['ComboBoxText'] = ComboBoxText
 #}}}
@@ -661,11 +663,11 @@ class ComboBoxEntryText (gtk.ComboBoxEntry): # {{{
 		gtk.ComboBoxEntry.__init__ (self, gtk.ListStore (str))
 		gui.assert_children (0, 1)
 		if len (gui.desc.children) > 0:
-			if nice_assert (gui.desc.children[0].tag == 'Label', 'ComboBoxEntryText child must be a Label'):
-				setcontent (gui.desc.children[0].attributes['value'])
+			if nice_assert (gui.desc.children[0].tag == 'Label' and gui.desc.children[0].attributes['value'].startswith (':'), 'ComboBoxEntryText child must be a Label'):
+				setcontent (gui.desc.children[0].attributes['value'][1:])
 		gui.register_attribute ('content', None, setcontent)
 		gui.register_attribute ('value', self.get_active, self.set_active)
-		gui.register_attribute ('text', lambda: self.get_model ().get_value (self.get_model ().get_active_iter (), 0), set)
+		gui.register_attribute ('text', self.child.get_text, set)
 		gui.register_gtk_event ('changed')
 		gui.register_gtk_event ('activate', gtk_widget = self.child)
 builtins['ComboBoxEntryText'] = ComboBoxEntryText
