@@ -65,8 +65,8 @@ def find_path (name, packagename): # {{{
 		return path
 	if os.path.exists (name):
 		return name
-	sys.stderr.write ('gui definition for %s not found\n' % name)
-	sys.exit (1)
+	sys.stderr.write ('Warning: gui definition for %s not found\n' % name)
+	return None
 # }}}
 
 def as_bool (value): # {{{
@@ -845,11 +845,17 @@ class Gui: # {{{
 				ret.children += (self.__element__ ('Label', {'value': ':' + c.tail.strip ()}, []),)
 		return ret
 	# }}}
-	def __init__ (self, packagename = None, execname = None, gtk = {}, widgets = (), events = {}, data = None): # {{{
+	def __init__ (self, packagename = None, execname = None, gtk = {}, widgets = (), events = {}, inputs = (), outputs = (), data = None): # {{{
 		'''Initialize the gui object.
 		name is the program name, which defaults to basename (sys.argv[0])
 		gtk is a list of gtk-specific objects which cannot be defined otherwise.
-		Note that using gtk objects binds the application to the gtk toolkit.'''
+		Note that using gtk objects binds the application to the gtk toolkit.
+		events is a dict linking all possible events to their callback.
+		inputs and outputs are sequences listing all input and output attributes.
+		
+		If the gui interface description cannot be found, a simple
+		interface is constructed containing a button for each event,
+		an entry for each input and a label for each output.'''
 		self.__data__ = data
 		if isinstance (widgets, dict):
 			self.__widgets__ = [widgets, builtins]
@@ -873,10 +879,33 @@ class Gui: # {{{
 		self.__gtk__ = gtk
 		self.__building__ = True
 		filename = find_path (execname + os.extsep + 'gui', packagename)
-		tree = ET.parse (filename)
-		root = tree.getroot ()
-		nice_assert (not root.tail or not root.tail.strip (), 'unexpected data at end of gui description')
-		tree = self.__parse__ (root)
+		if filename is None:
+			customs = []
+			for g in gtk:
+				customs.append (self.__element__ ('VBox', {}, [self.__element__ ('Label', {'value': ':' + g}, []), self.__element__ ('External', {'id': g}, [])]))
+			entries = []
+			for i in inputs:
+				entries.append (self.__element__ ('HBox', {}, [self.__element__ ('Label', {'value': ':' + i + ':'}, []), self.__element__ ('Entry', {'value': i}, [])]))
+			labels = []
+			for o in outputs:
+				labels.append (self.__element__ ('HBox', {}, [self.__element__ ('Label', {'value': ':' + o + ':'}, []), self.__element__ ('Label', {'value': o}, [])]))
+			buttons = []
+			for e in events:
+				buttons.append (self.__element__ ('Button', {'clicked': e}, [self.__element__ ('Label', {'value': ':' + e}, [])]))
+			columns = [self.__element__ ('VBox', {}, x) for x in (entries, labels, buttons) if len (x) > 0]
+			content = columns if len (columns) == 1 else [self.__element__ ('HBox', {}, columns)]
+			if len (customs) > 0:
+				content = [self.__element__ ('VBox', {}, [self.__element__ ('HBox', {}, customs), content[0]])]
+			tree = self.__element__ ('gtk', {}, [self.__element__ ('Window', {}, columns if len (columns) == 1 else [self.__element__ ('HBox', {}, columns)])])
+			filename = os.getenv ('GUI_SAVE_INTERFACE_FILENAME')
+			if filename:
+				with open (filename, 'wb') as f:
+					f.write (repr (tree))
+		else:
+			tree = ET.parse (filename)
+			root = tree.getroot ()
+			nice_assert (not root.tail or not root.tail.strip (), 'unexpected data at end of gui description')
+			tree = self.__parse__ (root)
 
 		nice_assert (tree.tag == 'gtk', 'gui description top level element is not <gtk>')
 		self.__windows__ = []
@@ -912,6 +941,24 @@ class Gui: # {{{
 		self.__windows__.reverse ()
 		nice_assert (self.__gtk__ == {}, 'Not all externally provided widgets were used: ' + str (self.__gtk__))
 		del self.__gtk__
+		# Check that only declared inputs, (__get__ has the same keys as __set__) and events are used.
+		for name in self.__get__:
+			nice_assert (name in inputs or name in outputs and name in self.__set__, 'undeclared name %s used in the gui (or output used as input)' % name)
+		for name in self.__set__:
+			nice_assert (name in inputs and name in self.__get__ or name in outputs, 'undeclared name %s used in the gui (or input used as output)' % name)
+		for name in self.__event__:
+			nice_assert (name in events, 'undeclared event name %s used in the gui' % name)
+		# Check that all used names are declared.
+		for i in inputs:
+			for o in outputs:
+				nice_assert (i != o, 'duplicate name %s used for input and output' % i)
+		nice_assert (len (inputs) == len (set (inputs)), 'one or more duplicate names in inputs')
+		nice_assert (len (outputs) == len (set (outputs)), 'one or more duplicate names in outputs')
+		# Check that all declared names are used.
+		for name in inputs:
+			nice_assert (name in self.__get__, 'input name %s is not in the gui' % name)
+		for name in outputs:
+			nice_assert (name in self.__set__, 'output name %s is not in the gui' % name)
 		# Register provided events.
 		for name in events:
 			if not nice_assert (name in self.__event__, 'event name %s is not in the gui' % name):
