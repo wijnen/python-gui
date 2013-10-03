@@ -559,6 +559,46 @@ class CheckButton (gtk.CheckButton): # {{{
 		gui.add ()
 builtins['CheckButton'] = CheckButton
 #}}}
+class RadioButton (gtk.RadioButton): # {{{
+	def __init__ (self, gui):
+		gtk.RadioButton.__init__ (self)
+		self.group = ''
+		if len (gui.gui.__radio_groups__[self.group]) > 0:
+			self.set_group (gui.gui.__radio_groups__[self.group][0])
+		gui.gui.__radio_groups__[self.group].append (self)
+		def get (): # {{{
+			if self.get_inconsistent ():
+				return None
+			return self.get_active ()
+		# }}}
+		def get_group (): # {{{
+			return self.group
+		# }}}
+		def set (value): # {{{
+			if value is None:
+				self.set_inconsistent (True)
+			else:
+				self.set_inconsistent (False)
+				self.set_active (as_bool (value))
+		# }}}
+		def set_group (group): # {{{
+			gui.gui.__radio_groups__[self.group].remove (self)
+			if self.group != '' and len (gui.gui.__radio_groups__[self.group]) == 0:
+				del gui.gui.__radio_groups__[self.group]
+			if group in gui.gui.__radio_groups__:
+				self.set_group (gui.gui.__radio_groups__[group][0])
+			else:
+				self.set_group (None)
+				gui.gui.__radio_groups__[group] = []
+			gui.gui.__radio_groups__[group].append (self)
+			self.group = group
+		# }}}
+		gui.register_attribute ('value', get, set)
+		gui.register_attribute ('group', get_group, set_group)
+		gui.register_gtk_event ('toggled')
+		gui.add ()
+builtins['RadioButton'] = RadioButton
+#}}}
 class Entry (gtk.Entry): # {{{
 	def __init__ (self, gui):
 		gtk.Entry.__init__ (self)
@@ -866,6 +906,7 @@ class Gui: # {{{
 		self.__get__ = {}
 		self.__set__ = {}
 		self.__defs__ = {}
+		self.__radio_groups__ = {'': []}
 		self.__loop_return__ = None
 		if not execname:
 			execname = os.path.basename (sys.argv[0])
