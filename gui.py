@@ -1113,8 +1113,8 @@ class Gui: # {{{
 			wrap.register_attribute ('show', ret.get_visible, lambda x: show (ret, x))
 		else:
 			wrap.register_attribute ('show', lambda: ret.get_data ('show'), lambda x: showwin (ret, x))
-		wrap.register_attribute ('sensitive', ret.get_sensitive, ret.set_sensitive)
-		wrap.register_attribute ('can_focus', lambda x: ret.get_can_focus (as_bool (x)), lambda x: ret.set_can_focus (as_bool (x)))
+		wrap.register_attribute ('sensitive', ret.get_sensitive, lambda x: ret.set_sensitive (as_bool (x)))
+		wrap.register_attribute ('can_focus', ret.get_can_focus, lambda x: ret.set_can_focus (as_bool (x)))
 		if fromparent != None:
 			for k in fromparent:
 				wrap.register_attribute (k, fromparent[k][0], fromparent[k][1], ret)
