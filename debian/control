@@ -7,7 +7,7 @@ Standards-Version: 3.9.3
 
 Package: python-gui
 Architecture: all
-Depends: ${misc:Depends}, ${python:Depends}
+Depends: ${misc:Depends}, ${python:Depends}, python-xdgbasedir, python-gtk2
 Description: python module for user defined gui design
  This module leaves the design of the gui to the user. A program only needs
  to define what information may be presented in the interface. The user then

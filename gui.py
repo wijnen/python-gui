@@ -25,6 +25,7 @@ import xml.etree.ElementTree as ET
 import gtk
 import glib
 import gobject
+import xdgbasedir
 # }}}
 
 # Global helper stuff {{{
@@ -57,7 +58,11 @@ def find_path (name, packagename): # {{{
 	d = os.getenv ('GUI_PATH')
 	if d is not None and os.path.exists (os.path.join (d, name)):
 		return d
-	path = os.path.join (glib.get_user_config_dir (), packagename, name)
+	# This returns all existing matching files, in order of importance.  Use the first, if any.
+	ret = xdgbasedir.data_files_read (name, packagename)
+	if len (ret) > 0:
+		return ret[0]
+	path = os.path.join (os.path.dirname (sys.argv[0]), name)
 	if os.path.exists (path):
 		return path
 	path = os.path.join (os.path.dirname (sys.argv[0]), name)
