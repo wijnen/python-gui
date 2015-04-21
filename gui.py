@@ -25,7 +25,7 @@ import xml.etree.ElementTree as ET
 import gtk
 import glib
 import gobject
-import xdgbasedir
+import fhs
 # }}}
 
 # Global helper stuff {{{
@@ -57,17 +57,9 @@ def find_path(name, packagename): # {{{
 	d = os.getenv('GUI_PATH')
 	if d is not None and os.path.exists(os.path.join(d, name)):
 		return d
-	# Use the file in the same directory as the executable.
-	path = os.path.join(os.path.dirname(sys.argv[0]), name)
-	if os.path.exists(path):
-		return path
-	# This returns all existing matching files, in order of importance.  Use the first, if any.
-	ret = xdgbasedir.data_files_read(name, packagename)
-	if len(ret) > 0:
-		return ret[0]
-	# Use the file in the current directory.
-	if os.path.exists(name):
-		return name
+	ret = fhs.read_data(name, opened = False, packagename = packagename)
+	if ret is not None:
+		return ret
 	# Give up.
 	sys.stderr.write('Warning: gui definition for %s not found\n' % name)
 	return None
@@ -466,7 +458,7 @@ class AboutDialog(gtk.AboutDialog): # {{{
 	def __init__(self, gui):
 		gtk.AboutDialog.__init__(self)
 		self.set_program_name(gui.gui.__execname__)
-		self.connect('response', lambda w, v: self.hide())
+		self.connect('response', lambda w, v: gui.gui._showwin(self, False))
 		def setup(info): # {{{
 			if isinstance(info, str):
 				i = {}
@@ -520,7 +512,7 @@ class Dialog(gtk.Dialog): # {{{
 			cbs[i] = gui.register_event('response')
 		gui.action_add(0, buttons - 1)
 		def response(widget, choice):
-			widget.hide()
+			gui.gui._showwin(self, False)
 			if cbs[choice] is None:
 				return
 			cbs[choice] ()
@@ -733,7 +725,7 @@ builtins['ComboBoxEntryText'] = ComboBoxEntryText
 #}}}
 class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
 	def __init__(self, gui, signal, hide):
-		self.hide = hide
+		self.must_hide = hide
 		gui.assert_children(0)
 		def set_action(value): # {{{
 			if value == 'open':
@@ -765,13 +757,14 @@ class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
 		gui.register_bool_attribute('overwrite_confirmation', self.get_do_overwrite_confirmation, self.set_do_overwrite_confirmation)
 		v = gui.register_event('response')
 		if v is not None:
-			def response(widget, r, dummy = None): # {{{
-				if self.hide:
-					widget.hide()
-				v(self.get_filename() if r == gtk.RESPONSE_ACCEPT else None)
+			def response(widget, r): # {{{
+				if self.must_hide:
+					gui.gui._showwin(self, False)
+				if r == gtk.RESPONSE_ACCEPT:
+					v(widget.get_filename())
 			# }}}
 			# A FileChooserDialog provides a response and fills the dummy argument; a FileChooserButton doesn't provide a response, puts ACCEPT there, and omits the dummy argument.
-			self.connect(signal, response, gtk.RESPONSE_ACCEPT)
+			self.connect(signal, response)
 class FileChooserButton(FileChooser, gtk.FileChooserButton): # {{{
 	def __init__(self, gui):
 		gtk.FileChooserButton.__init__(self, '')
@@ -1151,19 +1144,19 @@ class Gui: # {{{
 		else:
 			error('not setting ' + name + ", because it isn't defined in the gui")
 	# }}}
+	def _show(self, w, value): # {{{
+		if as_bool(value):
+			w.show()
+		else:
+			w.hide()
+	# }}}
+	def _showwin(self, w, value): # {{{
+		w.set_data('show', as_bool(value))
+		if not self.__building__:
+			self._show(w, value)
+	# }}}
 	def __build__(self, desc, fromparent = None): # {{{
 		'''Internal function to create a widget, including contents.'''
-		def show(w, value): # {{{
-			if as_bool(value):
-				w.show()
-			else:
-				w.hide()
-		# }}}
-		def showwin(w, value): # {{{
-			w.set_data('show', as_bool(value))
-			if not self.__building__:
-				show(w, value)
-		# }}}
 		for w in self.__widgets__:
 			if desc.tag in w:
 				widget = w[desc.tag]
@@ -1181,9 +1174,9 @@ class Gui: # {{{
 				return None
 		if not hasattr(ret, 'gtk_window'):
 			ret.show()
-			wrap.register_attribute('show', ret.get_visible, lambda x: show(ret, x))
+			wrap.register_attribute('show', ret.get_visible, lambda x: self._show(ret, x))
 		else:
-			wrap.register_attribute('show', lambda: ret.get_data('show'), lambda x: showwin(ret, x))
+			wrap.register_attribute('show', lambda: ret.get_data('show'), lambda x: self._showwin(ret, x))
 		wrap.register_attribute('sensitive', ret.get_sensitive, lambda x: ret.set_sensitive(as_bool(x)))
 		wrap.register_attribute('can_focus', ret.get_can_focus, lambda x: ret.set_can_focus(as_bool(x)))
 		if fromparent != None:
@@ -1198,7 +1191,7 @@ class Gui: # {{{
 		if run:
 			for w in self.__windows__:
 				if w.get_data('show') == True:	# True means show, None and False mean hide.
-					w.show()
+					self._show(w, True)
 			if run is True:
 				gtk.main()
 			else:
