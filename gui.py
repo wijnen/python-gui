@@ -22,9 +22,7 @@
 import sys
 import os
 import xml.etree.ElementTree as ET
-import gtk
-import glib
-import gobject
+from gi.repository import Gtk
 import fhs
 # }}}
 
@@ -166,7 +164,7 @@ class Wrapper: # {{{
 		self.register_attribute(name, lambda: as_bool(getcb()), lambda x: setcb(as_bool(x)))
 	# }}}
 	def register_gtk_event(self, name, gtk_widget = None): # {{{
-		'''Internal function to register a gtk event.'''
+		'''Internal function to register a Gtk event.'''
 		value = self.get_attribute(name)
 		if value is None:
 			return
@@ -178,7 +176,7 @@ class Wrapper: # {{{
 			gtk_widget.connect(name, self.gui.__event_cb__, value)
 	# }}}
 	def register_event(self, name): # {{{
-		'''Internal function to register a non-gtk event.'''
+		'''Internal function to register a non-Gtk event.'''
 		value = self.get_attribute(name)
 		if value is None:
 			return lambda *args, **kwargs: None
@@ -199,28 +197,28 @@ class Wrapper: # {{{
 		'''Internal function to create contents of a widget which should use pack.'''
 		start, end, target = self.normalize_indices(start, end, target)
 		def expand(widget, value): # {{{
-			widget.set_data('expand', as_bool(value))
+			widget.mem_expand = as_bool(value)
 			parent = widget.get_parent()
 			if parent == None:
 				return
-			widget.set_child_packing(parent, widget.get_data('expand'), widget.get_data('fill'), 0, gtk.PACK_START)
+			widget.set_child_packing(parent, widget.mem_expand, widget.mem_fill, 0, Gtk.PACK_START)
 		# }}}
 		def fill(widget, value): # {{{
-			widget.set_data('fill', as_bool(value))
+			widget.mem_fill = as_bool(value)
 			parent = widget.get_parent()
 			if parent == None:
 				return
-			widget.set_child_packing(parent, widget.get_data('expand'), widget.get_data('fill'), 0, gtk.PACK_START)
+			widget.set_child_packing(parent, widget.mem_expand, widget.mem_fill, 0, Gtk.PACK_START)
 		# }}}
 		for c in self.desc.children[start:end + 1]:
-			x = self.gui.__build__(c, {'expand': (lambda x: x.get_data('expand'), expand), 'fill': (lambda x: x.get_data('fill'), fill)})
+			x = self.gui.__build__(c, {'expand': (lambda x: x.mem_expand, expand), 'fill': (lambda x: x.mem_fill, fill)})
 			if x is None:
 				continue
-			if x.get_data('expand') == None:
-				x.set_data('expand', True)
-			if x.get_data('fill') == None:
-				x.set_data('fill', True)
-			target.pack_start(x, x.get_data('expand'), x.get_data('fill'))
+			if not hasattr(x, 'mem_expand'):
+				x.mem_expand = True
+			if not hasattr(x, 'mem_fill'):
+				x.mem_fill = True
+			target.pack_start(x, x.mem_expand, x.mem_fill, 0)
 	# }}}
 	def notebook_add(self, start = 0, end = -1, target = None): # {{{
 		'''Internal function to create contents of a notebook.'''
@@ -228,13 +226,13 @@ class Wrapper: # {{{
 		def set_page(widget, value): # {{{
 			'''View this child in the Notebook.
 			If the page isn't attached yet, record that it should be shown when it is.'''
-			target.set_data('page', widget)
+			target.mem_page = widget
 			p = widget.get_parent()
 			if p is not None:
 				p.set_current_page(p.page_num(widget))
 		# }}}
 		def set_label(widget, value): # {{{
-			widget.set_data('label', value)
+			widget.mem_label = value
 			p = widget.get_parent()
 			if p is not None:
 				p.set_tab_label_text(widget, value)
@@ -244,14 +242,14 @@ class Wrapper: # {{{
 				name = c.attributes.pop('name')
 				nice_assert(name not in self.gui.__get__, 'tab name %s is already defined as a getter' % name)
 				self.gui.__get__[name] = (None, self.widget.get_n_pages())
-			x = self.gui.__build__(c, {'page': (None, set_page), 'label': (lambda x: x.get_data('label'), set_label)})
+			x = self.gui.__build__(c, {'page': (None, set_page), 'label': (lambda x: x.mem_label, set_label)})
 			if x is None:
 				continue
 			target.append_page(x)
-			label = x.get_data('label')
+			label = x.mem_label
 			if label != None:
 				target.set_tab_label_text(x, label)
-		page = target.get_data('page')
+		page = target.mem_page
 		if page is not None:
 			target.set_current_page(self.widget.page_num(page))
 	# }}}
@@ -275,77 +273,77 @@ class Wrapper: # {{{
 			if '' in w:
 				del w[w.index('')]
 			if 'expand' in w:
-				v |= gtk.EXPAND
+				v |= Gtk.AttachOptions.EXPAND
 				del w[w.index('expand')]
 			if 'fill' in w:
-				v |= gtk.FILL
+				v |= Gtk.AttachOptions.FILL
 				del w[w.index('fill')]
 			if 'shrink' in w:
-				v |= gtk.SHRINK
+				v |= Gtk.AttachOptions.SHRINK
 				del w[w.index('shrink')]
 			nice_assert(w == [], 'invalid options for table: %s' % ', '.join(w))
 			return v
 		# }}}
 		def xset(widget, value): # {{{
-			widget.set_data('xopts', parse(value))
+			widget.mem_xopts = parse(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'x-options', widget.get_data('xopts'))
+				parent.child_set_property(widget, 'x-options', widget.mem_xopts)
 		# }}}
 		def yset(widget, value): # {{{
-			widget.set_data('yopts', parse(value))
+			widget.mem_yopts = parse(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'y-options', widget.get_data('yopts'))
+				parent.child_set_property(widget, 'y-options', widget.mem_yopts)
 		# }}}
 		def lset(widget, value): # {{{
-			widget.set_data('left', int(value))
+			widget.mem_left = int(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'left-attach', widget.get_data('left'))
+				parent.child_set_property(widget, 'left-attach', widget.mem_left)
 		# }}}
 		def rset(widget, value): # {{{
-			widget.set_data('right', int(value))
+			widget.mem_right = int(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'right-attach', widget.get_data('right'))
+				parent.child_set_property(widget, 'right-attach', widget.mem_right)
 		# }}}
 		def tset(widget, value): # {{{
-			widget.set_data('top', int(value))
+			widget.mem_top = int(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'top-attach', widget.get_data('top'))
+				parent.child_set_property(widget, 'top-attach', widget.mem_top)
 		# }}}
 		def bset(widget, value): # {{{
-			widget.set_data('bottom', int(value))
+			widget.mem_bottom = int(value)
 			parent = widget.get_parent()
 			if parent is not None:
-				parent.child_set_property(widget, 'bottom-attach', widget.get_data('bottom'))
+				parent.child_set_property(widget, 'bottom-attach', widget.mem_bottom)
 		# }}}
 		cols = target.get_property('n-columns')
 		current = [0, 0]
 		for c in self.desc.children[start:end + 1]:
-			x = self.gui.__build__(c, {'x-options': (lambda x: x.get_data('xopts'), xset), 'y-options': (lambda x: x.get_data('yopts'), yset), 'left': (lambda x: x.get_data('left'), lset), 'right': (lambda x: x.get_data('right'), rset), 'top': (lambda x: x.get_data('top'), tset), 'bottom': (lambda x: x.get_data('bottom'), bset)})
+			x = self.gui.__build__(c, {'x-options': (lambda x: x.mem_xopts, xset), 'y-options': (lambda x: x.mem_yopts, yset), 'left': (lambda x: x.mem_left, lset), 'right': (lambda x: x.mem_right, rset), 'top': (lambda x: x.mem_top, tset), 'bottom': (lambda x: x.mem_bottom, bset)})
 			if x is None:
 				continue
-			if x.get_data('xopts') == None:
-				x.set_data('xopts', gtk.EXPAND | gtk.FILL)
-			if x.get_data('yopts') == None:
-				x.set_data('yopts', gtk.EXPAND | gtk.FILL)
-			if x.get_data('left') == None:
-				x.set_data('left', current[0])
-			if x.get_data('right') == None:
-				x.set_data('right', x.get_data('left') + 1)
-			if x.get_data('top') == None:
-				x.set_data('top', current[1])
-			if x.get_data('bottom') == None:
-				x.set_data('bottom', x.get_data('top') + 1)
-			current[0] = x.get_data('right')
-			current[1] = x.get_data('top')
+			if not hasattr(x, 'mem_xopts'):
+				x.mem_xopts = Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL
+			if not hasattr(x, 'mem_yopts'):
+				x.mem_yopts = Gtk.AttachOptions.EXPAND | Gtk.AttachOptions.FILL
+			if not hasattr(x, 'mem_left'):
+				x.mem_left = current[0]
+			if not hasattr(x, 'mem_right'):
+				x.mem_right = x.mem_left + 1
+			if not hasattr(x, 'mem_top'):
+				x.mem_top = current[1]
+			if not hasattr(x, 'mem_bottom'):
+				x.mem_bottom = x.mem_top + 1
+			current[0] = x.mem_right
+			current[1] = x.mem_top
 			if current[0] >= cols:
 				current[0] = 0
 				current[1] += 1
-			target.attach(x, x.get_data('left'), x.get_data('right'), x.get_data('top'), x.get_data('bottom'), x.get_data('xopts'), x.get_data('yopts'))
+			target.attach(x, x.mem_left, x.mem_right, x.mem_top, x.mem_bottom, x.mem_xopts, x.mem_yopts)
 	# }}}
 	def action_add(self, start = 0, end = -1, target = None): # {{{
 		start, end, target = self.normalize_indices(start, end, target)
@@ -429,34 +427,34 @@ class Setting: # {{{
 		self.return_object = None
 builtins['Setting'] = Setting
 # }}}
-class Label(gtk.Label): # {{{
+class Label(Gtk.Label): # {{{
 	def __init__(self, gui):
-		gtk.Label.__init__(self)
+		Gtk.Label.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('value', self.get_text, self.set_text)
 builtins['Label'] = Label
 #}}}
-class Window(gtk.Window): # {{{
+class Window(Gtk.Window): # {{{
 	gtk_window = True
 	def __init__(self, gui):
-		gtk.Window.__init__(self)
+		Gtk.Window.__init__(self)
 		gui.assert_children(1)
-		self.set_data('show', True)
+		self.mem_show = True
 		gui.register_attribute('title', self.get_title, self.set_title, default = gui.gui.__packagename__)
 		gui.add()
 builtins['Window'] = Window
 # }}}
-class ScrolledWindow(gtk.ScrolledWindow): # {{{
+class ScrolledWindow(Gtk.ScrolledWindow): # {{{
 	def __init__(self, gui):
-		gtk.ScrolledWindow.__init__(self)
+		Gtk.ScrolledWindow.__init__(self)
 		gui.assert_children(1)
 		gui.add()
 builtins['ScrolledWindow'] = ScrolledWindow
 #}}}
-class AboutDialog(gtk.AboutDialog): # {{{
+class AboutDialog(Gtk.AboutDialog): # {{{
 	gtk_window = True
 	def __init__(self, gui):
-		gtk.AboutDialog.__init__(self)
+		Gtk.AboutDialog.__init__(self)
 		self.set_program_name(gui.gui.__execname__)
 		self.connect('response', lambda w, v: gui.gui._showwin(self, False))
 		def setup(info): # {{{
@@ -496,10 +494,10 @@ class AboutDialog(gtk.AboutDialog): # {{{
 		gui.register_attribute('setup', None, setup)
 builtins['AboutDialog'] = AboutDialog
 # }}}
-class Dialog(gtk.Dialog): # {{{
+class Dialog(Gtk.Dialog): # {{{
 	gtk_window = True
 	def __init__(self, gui):
-		gtk.Dialog.__init__(self)
+		Gtk.Dialog.__init__(self)
 		self.set_modal(True)
 		buttons = int(gui.get_attribute('buttons', default = 1))
 		if not gui.assert_children(buttons, -1):
@@ -522,23 +520,23 @@ class Dialog(gtk.Dialog): # {{{
 		gui.pack_add(target = self.vbox, start = buttons)
 builtins['Dialog'] = Dialog
 # }}}
-class VBox(gtk.VBox): # {{{
+class VBox(Gtk.VBox): # {{{
 	def __init__(self, gui):
-		gtk.VBox.__init__(self)
+		Gtk.VBox.__init__(self)
 		gui.pack_add()
 builtins['VBox'] = VBox
 #}}}
-class HBox(gtk.HBox): # {{{
+class HBox(Gtk.HBox): # {{{
 	def __init__(self, gui):
-		gtk.HBox.__init__(self)
+		Gtk.HBox.__init__(self)
 		gui.pack_add()
 builtins['HBox'] = HBox
 #}}}
-class Notebook(gtk.Notebook): # {{{
+class Notebook(Gtk.Notebook): # {{{
 	def __init__(self, gui):
-		gtk.Notebook.__init__(self)
+		Gtk.Notebook.__init__(self)
 		gui.register_bool_attribute('show_tabs', self.get_show_tabs, self.set_show_tabs)
-		tab_pos = {gtk.POS_TOP: 'top', gtk.POS_BOTTOM: 'bottom', gtk.POS_LEFT: 'left', gtk.POS_RIGHT: 'right'}
+		tab_pos = {Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom', Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right'}
 		gui.register_attribute('tab_pos', lambda: tab_pos[self.get_tab_pos()], lambda x: self.set_tab_pos([t[0] for t in tab_pos.items() if t[1] == x][0]))
 		def save_page():
 			p = self.get_current_page()
@@ -548,16 +546,16 @@ class Notebook(gtk.Notebook): # {{{
 		gui.notebook_add()
 builtins['Notebook'] = Notebook
 #}}}
-class Button(gtk.Button): # {{{
+class Button(Gtk.Button): # {{{
 	def __init__(self, gui):
-		gtk.Button.__init__(self)
+		Gtk.Button.__init__(self)
 		gui.register_gtk_event('clicked')
 		gui.add()
 builtins['Button'] = Button
 #}}}
-class CheckButton(gtk.CheckButton): # {{{
+class CheckButton(Gtk.CheckButton): # {{{
 	def __init__(self, gui):
-		gtk.CheckButton.__init__(self)
+		Gtk.CheckButton.__init__(self)
 		def get(): # {{{
 			if self.get_inconsistent():
 				return None
@@ -575,9 +573,9 @@ class CheckButton(gtk.CheckButton): # {{{
 		gui.add()
 builtins['CheckButton'] = CheckButton
 #}}}
-class RadioButton(gtk.RadioButton): # {{{
+class RadioButton(Gtk.RadioButton): # {{{
 	def __init__(self, gui):
-		gtk.RadioButton.__init__(self)
+		Gtk.RadioButton.__init__(self)
 		self.group = ''
 		if len(gui.gui.__radio_groups__[self.group]) > 0:
 			self.set_group(gui.gui.__radio_groups__[self.group][0])
@@ -615,41 +613,42 @@ class RadioButton(gtk.RadioButton): # {{{
 		gui.add()
 builtins['RadioButton'] = RadioButton
 #}}}
-class Entry(gtk.Entry): # {{{
+class Entry(Gtk.Entry): # {{{
 	def __init__(self, gui):
-		gtk.Entry.__init__(self)
+		Gtk.Entry.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('value', self.get_text, self.set_text)
 		gui.register_gtk_event('activate')
 		gui.register_gtk_event('changed')
 builtins['Entry'] = Entry
 #}}}
-class Frame(gtk.Frame): # {{{
+class Frame(Gtk.Frame): # {{{
 	def __init__(self, gui):
-		gtk.Frame.__init__(self)
+		Gtk.Frame.__init__(self)
 		gui.register_attribute('label', self.get_label, lambda value: self.set_label(None if value == '' else value))
 		gui.add()
 builtins['Frame'] = Frame
 # }}}
-class Table(gtk.Table): # {{{
+class Table(Gtk.Table): # {{{
 	def __init__(self, gui):
 		cols = int(gui.get_attribute('columns', default = 1))
-		gtk.Table.__init__(self, 1, cols)
+		Gtk.Table.__init__(self, 1, cols)
 		gui.table_add()
 builtins['Table'] = Table
 #}}}
-class SpinButton(gtk.SpinButton): # {{{
+class SpinButton(Gtk.SpinButton): # {{{
 	def __init__(self, gui):
-		gtk.SpinButton.__init__(self)
+		Gtk.SpinButton.__init__(self)
 		gui.assert_children(0)
 		self.set_increments(1, 10)
 		gui.register_attribute('range', self.get_range, lambda r: self.set_range(*parse_nums(r)))
+		gui.register_attribute('digits', self.get_digits, lambda v: self.set_digits(int(v)))
 		gui.register_attribute('value', self.get_value, lambda v: self.set_value(float(v)))
 		gui.register_attribute('increment', self.get_increments, lambda r: self.set_increments(*parse_nums(r)))
 		gui.register_gtk_event('value-changed')
 builtins['SpinButton'] = SpinButton
 #}}}
-class ComboBoxText(gtk.ComboBox): # {{{
+class ComboBoxText(Gtk.ComboBox): # {{{
 	def __init__(self, gui):
 		def setcontent(value): # {{{
 			if isinstance(value, str):
@@ -673,8 +672,8 @@ class ComboBoxText(gtk.ComboBox): # {{{
 				self.get_model().append((value,))
 				self.set_active(len(d))
 		# }}}
-		gtk.ComboBox.__init__(self, gtk.ListStore(str))
-		renderer = gtk.CellRendererText()
+		Gtk.ComboBox.__init__(self, Gtk.ListStore(str))
+		renderer = Gtk.CellRendererText()
 		self.pack_start(renderer)
 		self.add_attribute(renderer, 'text', 0)
 		gui.assert_children(0, 1)
@@ -687,7 +686,8 @@ class ComboBoxText(gtk.ComboBox): # {{{
 		gui.register_gtk_event('changed')
 builtins['ComboBoxText'] = ComboBoxText
 #}}}
-class ComboBoxEntryText(gtk.ComboBoxEntry): # {{{
+'''
+class ComboBoxEntryText(Gtk.ComboBoxEntry): # {{{
 	def __init__(self, gui):
 		def setcontent(value): # {{{
 			if isinstance(value, str):
@@ -711,7 +711,7 @@ class ComboBoxEntryText(gtk.ComboBoxEntry): # {{{
 				self.get_model().append((value,))
 				self.set_active(len(d))
 		# }}}
-		gtk.ComboBoxEntry.__init__(self, gtk.ListStore(str))
+		Gtk.ComboBoxEntry.__init__(self, Gtk.ListStore(str))
 		gui.assert_children(0, 1)
 		if len(gui.desc.children) > 0:
 			if nice_assert(gui.desc.children[0].tag == 'Label' and gui.desc.children[0].attributes['value'].startswith(':'), 'ComboBoxEntryText child must be a Label'):
@@ -723,31 +723,32 @@ class ComboBoxEntryText(gtk.ComboBoxEntry): # {{{
 		gui.register_gtk_event('activate', gtk_widget = self.child)
 builtins['ComboBoxEntryText'] = ComboBoxEntryText
 #}}}
+#'''
 class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
 	def __init__(self, gui, signal, hide):
 		self.must_hide = hide
 		gui.assert_children(0)
 		def set_action(value): # {{{
 			if value == 'open':
-				self.set_action(gtk.FILE_CHOOSER_ACTION_OPEN)
+				self.set_action(Gtk.FileChooserAction.OPEN)
 			elif value == 'save':
-				self.set_action(gtk.FILE_CHOOSER_ACTION_SAVE)
+				self.set_action(Gtk.FileChooserAction.SAVE)
 			elif value == 'select_folder':
-				self.set_action(gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER)
+				self.set_action(Gtk.FileChooserAction.SELECT_FOLDER)
 			elif value == 'create_folder':
-				self.set_action(gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER)
+				self.set_action(Gtk.FileChooserAction.CREATE_FOLDER)
 			else:
 				error('invalid action type %s for FileChooser' % value)
 		# }}}
 		def get_action(): # {{{
 			a = self.get_action()
-			if a == gtk.FILE_CHOOSER_ACTION_OPEN:
+			if a == Gtk.FileChooserAction.OPEN:
 				return 'open'
-			if a == gtk.FILE_CHOOSER_ACTION_SAVE:
+			if a == Gtk.FileChooserAction.SAVE:
 				return 'save'
-			if a == gtk.FILE_CHOOSER_ACTION_SELECT_FOLDER:
+			if a == Gtk.FileChooserAction.SELECT_FOLDER:
 				return 'select_folder'
-			if a == gtk.FILE_CHOOSER_ACTION_CREATE_FOLDER:
+			if a == Gtk.FileChooserAction.CREATE_FOLDER:
 				return 'create_folder'
 			error('invalid action type for FileChooser')
 		# }}}
@@ -760,54 +761,54 @@ class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
 			def response(widget, r): # {{{
 				if self.must_hide:
 					gui.gui._showwin(self, False)
-				if r == gtk.RESPONSE_ACCEPT:
+				if r == Gtk.ResponseType.ACCEPT:
 					v(widget.get_filename())
 			# }}}
 			# A FileChooserDialog provides a response and fills the dummy argument; a FileChooserButton doesn't provide a response, puts ACCEPT there, and omits the dummy argument.
 			self.connect(signal, response)
-class FileChooserButton(FileChooser, gtk.FileChooserButton): # {{{
+class FileChooserButton(FileChooser, Gtk.FileChooserButton): # {{{
 	def __init__(self, gui):
-		gtk.FileChooserButton.__init__(self, '')
+		Gtk.FileChooserButton.__init__(self, '')
 		FileChooser.__init__(self, gui, 'file-set', False)
 builtins['FileChooserButton'] = FileChooserButton
 # }}}
-class FileChooserDialog(FileChooser, gtk.FileChooserDialog): # {{{
+class FileChooserDialog(FileChooser, Gtk.FileChooserDialog): # {{{
 	gtk_window = True
 	def __init__(self, gui):
-		gtk.FileChooserDialog.__init__(self, '', buttons = (gtk.STOCK_CANCEL, gtk.RESPONSE_REJECT, gtk.STOCK_OK, gtk.RESPONSE_ACCEPT))
+		Gtk.FileChooserDialog.__init__(self, '', buttons = (Gtk.STOCK_CANCEL, Gtk.ResponseType.REJECT, Gtk.STOCK_OK, Gtk.ResponseType.ACCEPT))
 		FileChooser.__init__(self, gui, 'response', True)
 builtins['FileChooserDialog'] = FileChooserDialog
 # }}}
 # }}}
-class HSeparator(gtk.HSeparator): # {{{
+class HSeparator(Gtk.HSeparator): # {{{
 	def __init__(self, gui):
-		gtk.HSeparator.__init__(self)
+		Gtk.HSeparator.__init__(self)
 		gui.assert_children(0)
 builtins['HSeparator'] = HSeparator
 #}}}
-class VSeparator(gtk.VSeparator): # {{{
+class VSeparator(Gtk.VSeparator): # {{{
 	def __init__(self, gui):
-		gtk.VSeparator.__init__(self)
+		Gtk.VSeparator.__init__(self)
 		gui.assert_children(0)
 builtins['VSeparator'] = VSeparator
 #}}}
-class VScale(gtk.VScale): # {{{
+class VScale(Gtk.VScale): # {{{
 	def __init__(self, gui):
-		gtk.VScale.__init__(self)
+		Gtk.VScale.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('digits', self.get_digits, lambda v: self.set_digits(int(v)))
 		gui.register_attribute('draw_value', self.get_draw_value, lambda v: self.set_draw_value(as_bool(v)))
-		pos2str = {gtk.POS_LEFT: 'left', gtk.POS_RIGHT: 'right', gtk.POS_TOP: 'top', gtk.POS_BOTTOM: 'bottom'}
-		str2pos = {'left': gtk.POS_LEFT, 'right': gtk.POS_RIGHT, 'top': gtk.POS_TOP, 'bottom': gtk.POS_BOTTOM}
+		pos2str = {Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right', Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom'}
+		str2pos = {'left': Gtk.POS_LEFT, 'right': Gtk.POS_RIGHT, 'top': Gtk.POS_TOP, 'bottom': Gtk.POS_BOTTOM}
 		gui.register_attribute('value_pos', lambda: pos2str[self.get_value_pos()], lambda v: self.set_value_pos(str2pos[v]))
 		# marks
-		self.set_data('marks', [])
+		self.mem_marks = []
 		def set_marks(marks):
-			self.set_data('marks', marks)
+			self.mem_marks = marks
 			self.clear_marks()
 			for m in marks:
 				self.add_mark(m[0], str2pos[m[1]], m[2])
-		gui.register_attribute('marks', lambda: self.get_data('marks'), set_marks)
+		gui.register_attribute('marks', lambda: self.mem_marks, set_marks)
 		self.set_increments(1, 10)
 		gui.register_attribute('range', (self.get_adjustment().get_lower(), self.get_adjustment().get_upper()), lambda r: self.set_range(*parse_nums(r)))
 		gui.register_attribute('value', self.get_value, lambda v: self.set_value(float(v)))
@@ -816,23 +817,23 @@ class VScale(gtk.VScale): # {{{
 
 builtins['VScale'] = VScale
 #}}}
-class HScale(gtk.HScale): # {{{
+class HScale(Gtk.HScale): # {{{
 	def __init__(self, gui):
-		gtk.HScale.__init__(self)
+		Gtk.HScale.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('digits', self.get_digits, lambda v: self.set_digits(int(v)))
 		gui.register_attribute('draw_value', self.get_draw_value, lambda v: self.set_draw_value(as_bool(v)))
-		pos2str = {gtk.POS_LEFT: 'left', gtk.POS_RIGHT: 'right', gtk.POS_TOP: 'top', gtk.POS_BOTTOM: 'bottom'}
-		str2pos = {'left': gtk.POS_LEFT, 'right': gtk.POS_RIGHT, 'top': gtk.POS_TOP, 'bottom': gtk.POS_BOTTOM}
+		pos2str = {Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right', Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom'}
+		str2pos = {'left': Gtk.POS_LEFT, 'right': Gtk.POS_RIGHT, 'top': Gtk.POS_TOP, 'bottom': Gtk.POS_BOTTOM}
 		gui.register_attribute('value_pos', lambda: pos2str[self.get_value_pos()], lambda v: self.set_value_pos(str2pos[v]))
 		# marks
-		self.set_data('marks', [])
+		self.mem_marks = []
 		def set_marks(marks):
-			self.set_data('marks', marks)
+			self.mem_marks = marks
 			self.clear_marks()
 			for m in marks:
 				self.add_mark(m[0], str2pos[m[1]], m[2])
-		gui.register_attribute('marks', lambda: self.get_data('marks'), set_marks)
+		gui.register_attribute('marks', lambda: self.mem_marks, set_marks)
 		self.set_increments(1, 10)
 		gui.register_attribute('range', (self.get_adjustment().get_lower(), self.get_adjustment().get_upper()), lambda r: self.set_range(*parse_nums(r)))
 		gui.register_attribute('value', self.get_value, lambda v: self.set_value(float(v)))
@@ -843,9 +844,9 @@ builtins['HScale'] = HScale
 #}}}
 class MenuBar: # {{{
 	def __init__(self, gui):
-		ui = gtk.UIManager()
+		ui = Gtk.UIManager()
 		gui.gui.__accel_groups__.append(ui.get_accel_group())
-		actiongroup = gtk.ActionGroup('actiongroup')
+		actiongroup = Gtk.ActionGroup('actiongroup')
 		childdesc, actions = gui.parse_menubar()
 		actiongroup.add_actions(actions)
 		ui.add_ui_from_string('<ui><menubar>' + childdesc + '</menubar></ui>')
@@ -853,23 +854,23 @@ class MenuBar: # {{{
 		self.return_object = ui.get_widget('/menubar')
 builtins['MenuBar'] = MenuBar
 #}}}
-class HPaned(gtk.HPaned): # {{{
+class HPaned(Gtk.HPaned): # {{{
 	def __init__(self, gui):
-		gtk.HPaned.__init__(self)
+		Gtk.HPaned.__init__(self)
 		gui.assert_children(2)
 		gui.paned_add()
 builtins['HPaned'] = HPaned
 #}}}
-class VPaned(gtk.VPaned): # {{{
+class VPaned(Gtk.VPaned): # {{{
 	def __init__(self, gui):
-		gtk.VPaned.__init__(self)
+		Gtk.VPaned.__init__(self)
 		gui.assert_children(2)
 		gui.paned_add()
 builtins['VPaned'] = VPaned
 #}}}
-class Statusbar(gtk.Statusbar): # {{{
+class Statusbar(Gtk.Statusbar): # {{{
 	def __init__(self, gui):
-		gtk.Statusbar.__init__(self)
+		Gtk.Statusbar.__init__(self)
 		gui.assert_children(0)
 		self.value = ''
 		self.push(0, self.value)
@@ -881,19 +882,19 @@ class Statusbar(gtk.Statusbar): # {{{
 		gui.register_attribute('text', lambda: self.value, set)
 builtins['Statusbar'] = Statusbar
 #}}}
-class Image(gtk.Image): # {{{
+class Image(Gtk.Image): # {{{
 	def __init__(self, gui):
-		gtk.Image.__init__(self)
+		Gtk.Image.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('pixbuf', self.get_pixbuf, self.set_from_pixbuf)
 builtins['Image'] = Image
 #}}}
-class TextView(gtk.TextView): # {{{
+class TextView(Gtk.TextView): # {{{
 	def __init__(self, gui):
-		gtk.TextView.__init__(self)
+		Gtk.TextView.__init__(self)
 		gui.assert_children(0)
 		gui.register_attribute('text', lambda: self.get_text(self.get_buffer().get_start_iter(), self.get_buffer().get_end_iter()), self.get_buffer().set_text)
-		wrap_modes = {gtk.WRAP_NONE: 'none', gtk.WRAP_CHAR: 'char', gtk.WRAP_WORD: 'word', gtk.WRAP_WORD_CHAR: 'word_char'}
+		wrap_modes = {} #{Gtk.WRAP_NONE: 'none', Gtk.WRAP_CHAR: 'char', Gtk.WRAP_WORD: 'word', Gtk.WRAP_WORD_CHAR: 'word_char'}
 		gui.register_attribute('wrap_mode', lambda: wrap_modes[self.get_wrap_mode()], lambda x: self.set_wrap_mode([t[0] for t in wrap_modes.items() if t[1] == x][0]))
 		gui.register_bool_attribute('editable', self.get_editable, self.set_editable)
 builtins['TextView'] = TextView
@@ -949,11 +950,11 @@ class Gui: # {{{
 				ret.children += (self.__element__('Label', {'value': ':' + c.tail.strip()}, []),)
 		return ret
 	# }}}
-	def __init__(self, packagename = None, execname = None, gtk = {}, widgets = (), events = {}, inputs = (), outputs = (), data = None): # {{{
+	def __init__(self, packagename = None, execname = None, Gtk = {}, widgets = (), events = {}, inputs = (), outputs = (), data = None): # {{{
 		'''Initialize the gui object.
 		name is the program name, which defaults to basename(sys.argv[0])
-		gtk is a list of gtk-specific objects which cannot be defined otherwise.
-		Note that using gtk objects binds the application to the gtk toolkit.
+		Gtk is a list of Gtk-specific objects which cannot be defined otherwise.
+		Note that using Gtk objects binds the application to the Gtk toolkit.
 		events is a dict linking all possible events to their callback.
 		inputs and outputs are sequences listing all input and output attributes.
 		
@@ -972,6 +973,7 @@ class Gui: # {{{
 		self.__defs__ = {}
 		self.__radio_groups__ = {'': []}
 		self.__loop_return__ = None
+		self.__iterating__ = False
 		if not execname:
 			execname = os.path.basename(sys.argv[0])
 			e = os.extsep + 'py'
@@ -981,12 +983,12 @@ class Gui: # {{{
 			packagename = execname
 		self.__packagename__ = packagename
 		self.__execname__ = execname
-		self.__gtk__ = gtk
+		self.__gtk__ = Gtk
 		self.__building__ = True
 		filename = find_path(execname + os.extsep + 'gui', packagename)
 		if filename is None:
 			customs = []
-			for g in gtk:
+			for g in Gtk:
 				customs.append(self.__element__('VBox', {}, [self.__element__('Label', {'value': ':' + g}, []), self.__element__('External', {'id': g}, [])]))
 			entries = []
 			for i in inputs:
@@ -1001,7 +1003,7 @@ class Gui: # {{{
 			content = columns if len(columns) == 1 else [self.__element__('HBox', {}, columns)]
 			if len(customs) > 0:
 				content = [self.__element__('VBox', {}, [self.__element__('HBox', {}, customs), content[0]])]
-			tree = self.__element__('gtk', {}, [self.__element__('Window', {}, columns if len(columns) == 1 else [self.__element__('HBox', {}, columns)])])
+			tree = self.__element__('Gtk', {}, [self.__element__('Window', {}, columns if len(columns) == 1 else [self.__element__('HBox', {}, columns)])])
 			filename = os.getenv('GUI_SAVE_INTERFACE_FILENAME')
 			if filename:
 				with open(filename, 'wb') as f:
@@ -1012,7 +1014,7 @@ class Gui: # {{{
 			nice_assert(not root.tail or not root.tail.strip(), 'unexpected data at end of gui description')
 			tree = self.__parse__(root)
 
-		nice_assert(tree.tag == 'gtk', 'gui description top level element is not <gtk>')
+		nice_assert(tree.tag == 'Gtk', 'gui description top level element is not <Gtk>')
 		self.__windows__ = []
 		nice_assert(tree.attributes == {}, 'no attributes are allowed on top level tag')
 		# Find all defs.
@@ -1041,7 +1043,7 @@ class Gui: # {{{
 			self.__windows__.append(win)
 		nice_assert(len(self.__windows__) > 0, 'there are no gui elements defined', exit = True)
 		for w in self.__windows__:
-			w.connect('destroy', lambda x: self(False, None))
+			w.connect('destroy', lambda x: self(False, 'destroyed'))
 		# Reverse order, so first defined window is shown last, therefore(most likely) on top
 		self.__windows__.reverse()
 		nice_assert(self.__gtk__ == {}, 'Not all externally provided widgets were used: ' + str(self.__gtk__))
@@ -1151,7 +1153,7 @@ class Gui: # {{{
 			w.hide()
 	# }}}
 	def _showwin(self, w, value): # {{{
-		w.set_data('show', as_bool(value))
+		w.mem_show = as_bool(value)
 		if not self.__building__:
 			self._show(w, value)
 	# }}}
@@ -1176,7 +1178,7 @@ class Gui: # {{{
 			ret.show()
 			wrap.register_attribute('show', ret.get_visible, lambda x: self._show(ret, x))
 		else:
-			wrap.register_attribute('show', lambda: ret.get_data('show'), lambda x: self._showwin(ret, x))
+			wrap.register_attribute('show', lambda: ret.mem_show, lambda x: self._showwin(ret, x))
 		wrap.register_attribute('sensitive', ret.get_sensitive, lambda x: ret.set_sensitive(as_bool(x)))
 		wrap.register_attribute('can_focus', ret.get_can_focus, lambda x: ret.set_can_focus(as_bool(x)))
 		if fromparent != None:
@@ -1190,16 +1192,21 @@ class Gui: # {{{
 		'''Run the main loop.'''
 		if run:
 			for w in self.__windows__:
-				if w.get_data('show') == True:	# True means show, None and False mean hide.
+				if w.mem_show == True:	# True means show, None and False mean hide.
 					self._show(w, True)
 			if run is True:
-				gtk.main()
+				Gtk.main()
 			else:
-				while gtk.events_pending():
-					gtk.main_iteration(False)
+				self.__iterating__ = True
+				while self.__iterating__ and Gtk.events_pending():
+					Gtk.main_iteration_do(False)
+				self.__iterating__ = False
 			return self.__loop_return__
 		else:
 			self.__loop_return__ = ret
-			gtk.main_quit()
+			if self.__iterating__:
+				self.__iterating__ = False
+			else:
+				Gtk.main_quit()
 	# }}}
 # }}}
