@@ -520,6 +520,12 @@ class Dialog(Gtk.Dialog): # {{{
 		gui.pack_add(target = self.vbox, start = buttons)
 builtins['Dialog'] = Dialog
 # }}}
+class Socket(Gtk.Socket): # {{{
+	def __init__(self, gui):
+		Gtk.Socket.__init__(self)
+		gui.register_attribute('id', self.get_id, None)
+builtins['Socket'] = Socket
+#}}}
 class VBox(Gtk.VBox): # {{{
 	def __init__(self, gui):
 		Gtk.VBox.__init__(self)
