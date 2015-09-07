@@ -893,7 +893,7 @@ class TextView(Gtk.TextView): # {{{
 	def __init__(self, gui):
 		Gtk.TextView.__init__(self)
 		gui.assert_children(0)
-		gui.register_attribute('text', lambda: self.get_text(self.get_buffer().get_start_iter(), self.get_buffer().get_end_iter()), self.get_buffer().set_text)
+		gui.register_attribute('text', lambda: self.get_buffer().get_text(self.get_buffer().get_start_iter(), self.get_buffer().get_end_iter(), True), self.get_buffer().set_text)
 		wrap_modes = {} #{Gtk.WRAP_NONE: 'none', Gtk.WRAP_CHAR: 'char', Gtk.WRAP_WORD: 'word', Gtk.WRAP_WORD_CHAR: 'word_char'}
 		gui.register_attribute('wrap_mode', lambda: wrap_modes[self.get_wrap_mode()], lambda x: self.set_wrap_mode([t[0] for t in wrap_modes.items() if t[1] == x][0]))
 		gui.register_bool_attribute('editable', self.get_editable, self.set_editable)
