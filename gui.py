@@ -223,6 +223,7 @@ class Wrapper: # {{{
 	def notebook_add(self, start = 0, end = -1, target = None): # {{{
 		'''Internal function to create contents of a notebook.'''
 		start, end, target = self.normalize_indices(start, end, target)
+		target.mem_page = None
 		def set_page(widget, value): # {{{
 			'''View this child in the Notebook.
 			If the page isn't attached yet, record that it should be shown when it is.'''
@@ -542,7 +543,7 @@ class Notebook(Gtk.Notebook): # {{{
 	def __init__(self, gui):
 		Gtk.Notebook.__init__(self)
 		gui.register_bool_attribute('show_tabs', self.get_show_tabs, self.set_show_tabs)
-		tab_pos = {Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom', Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right'}
+		tab_pos = {Gtk.PositionType.TOP: 'top', Gtk.PositionType.BOTTOM: 'bottom', Gtk.PositionType.LEFT: 'left', Gtk.PositionType.RIGHT: 'right'}
 		gui.register_attribute('tab_pos', lambda: tab_pos[self.get_tab_pos()], lambda x: self.set_tab_pos([t[0] for t in tab_pos.items() if t[1] == x][0]))
 		def save_page():
 			p = self.get_current_page()
@@ -804,8 +805,8 @@ class VScale(Gtk.VScale): # {{{
 		gui.assert_children(0)
 		gui.register_attribute('digits', self.get_digits, lambda v: self.set_digits(int(v)))
 		gui.register_attribute('draw_value', self.get_draw_value, lambda v: self.set_draw_value(as_bool(v)))
-		pos2str = {Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right', Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom'}
-		str2pos = {'left': Gtk.POS_LEFT, 'right': Gtk.POS_RIGHT, 'top': Gtk.POS_TOP, 'bottom': Gtk.POS_BOTTOM}
+		pos2str = {Gtk.PositionType.LEFT: 'left', Gtk.PositionType.RIGHT: 'right', Gtk.PositionType.TOP: 'top', Gtk.PositionType.BOTTOM: 'bottom'}
+		str2pos = {'left': Gtk.PositionType.LEFT, 'right': Gtk.PositionType.RIGHT, 'top': Gtk.PositionType.TOP, 'bottom': Gtk.PositionType.BOTTOM}
 		gui.register_attribute('value_pos', lambda: pos2str[self.get_value_pos()], lambda v: self.set_value_pos(str2pos[v]))
 		# marks
 		self.mem_marks = []
@@ -829,8 +830,8 @@ class HScale(Gtk.HScale): # {{{
 		gui.assert_children(0)
 		gui.register_attribute('digits', self.get_digits, lambda v: self.set_digits(int(v)))
 		gui.register_attribute('draw_value', self.get_draw_value, lambda v: self.set_draw_value(as_bool(v)))
-		pos2str = {Gtk.POS_LEFT: 'left', Gtk.POS_RIGHT: 'right', Gtk.POS_TOP: 'top', Gtk.POS_BOTTOM: 'bottom'}
-		str2pos = {'left': Gtk.POS_LEFT, 'right': Gtk.POS_RIGHT, 'top': Gtk.POS_TOP, 'bottom': Gtk.POS_BOTTOM}
+		pos2str = {Gtk.PositionType.LEFT: 'left', Gtk.PositionType.RIGHT: 'right', Gtk.PositionType.TOP: 'top', Gtk.PositionType.BOTTOM: 'bottom'}
+		str2pos = {'left': Gtk.PositionType.LEFT, 'right': Gtk.PositionType.RIGHT, 'top': Gtk.PositionType.TOP, 'bottom': Gtk.PositionType.BOTTOM}
 		gui.register_attribute('value_pos', lambda: pos2str[self.get_value_pos()], lambda v: self.set_value_pos(str2pos[v]))
 		# marks
 		self.mem_marks = []
