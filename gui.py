@@ -22,6 +22,8 @@
 import sys
 import os
 import xml.etree.ElementTree as ET
+import gi
+gi.require_version('Gtk', '3.0')
 from gi.repository import Gtk
 import fhs
 # }}}
@@ -247,9 +249,10 @@ class Wrapper: # {{{
 			if x is None:
 				continue
 			target.append_page(x)
-			label = x.mem_label
-			if label != None:
-				target.set_tab_label_text(x, label)
+			if hasattr(x, 'mem_label'):
+				label = x.mem_label
+				if label != None:
+					target.set_tab_label_text(x, label)
 		page = target.mem_page
 		if page is not None:
 			target.set_current_page(self.widget.page_num(page))
@@ -679,9 +682,10 @@ class ComboBoxText(Gtk.ComboBox): # {{{
 				self.get_model().append((value,))
 				self.set_active(len(d))
 		# }}}
-		Gtk.ComboBox.__init__(self, Gtk.ListStore(str))
+		Gtk.ComboBox.__init__(self)
+		self.set_model(Gtk.ListStore(str))
 		renderer = Gtk.CellRendererText()
-		self.pack_start(renderer)
+		self.pack_start(renderer, True)
 		self.add_attribute(renderer, 'text', 0)
 		gui.assert_children(0, 1)
 		if len(gui.desc.children) > 0:
@@ -731,7 +735,7 @@ class ComboBoxEntryText(Gtk.ComboBoxEntry): # {{{
 builtins['ComboBoxEntryText'] = ComboBoxEntryText
 #}}}
 #'''
-class FileChooser: # Base class for FileChooserButton and FileChooserDialog.{{{
+class FileChooser(object): # Base class for FileChooserButton and FileChooserDialog.{{{
 	def __init__(self, gui, signal, hide):
 		self.must_hide = hide
 		gui.assert_children(0)
@@ -1199,6 +1203,8 @@ class Gui: # {{{
 		'''Run the main loop.'''
 		if run:
 			for w in self.__windows__:
+				if not hasattr(w, 'mem_show'):
+					w.mem_show = None
 				if w.mem_show == True:	# True means show, None and False mean hide.
 					self._show(w, True)
 			if run is True:
