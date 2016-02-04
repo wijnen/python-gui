@@ -769,11 +769,10 @@ class FileChooser(object): # Base class for FileChooserButton and FileChooserDia
 		gui.register_bool_attribute('overwrite_confirmation', self.get_do_overwrite_confirmation, self.set_do_overwrite_confirmation)
 		v = gui.register_event('response')
 		if v is not None:
-			def response(widget, r): # {{{
+			def response(widget): # {{{
 				if self.must_hide:
 					gui.gui._showwin(self, False)
-				if r == Gtk.ResponseType.ACCEPT:
-					v(widget.get_filename())
+				v(widget.get_filename())
 			# }}}
 			# A FileChooserDialog provides a response and fills the dummy argument; a FileChooserButton doesn't provide a response, puts ACCEPT there, and omits the dummy argument.
 			self.connect(signal, response)
